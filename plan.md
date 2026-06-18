@@ -112,6 +112,7 @@ actor ModelHost {               // ADR-11: one heavy model resident at a time
 > Order optimizes for de-risking. Phase 1 (capture) and Phase 1B (model infra + eval) run in **parallel** — the eval harness needs only sample audio (QuickTime/existing recordings), not the real recorder.
 
 ### Phase 1 — Capture spike  *(riskiest macOS unknown)*
+**Status (2026-06-18): code-complete & building; on-device run pending.** SwiftPM workspace, `SessionStore`, `AudioResampler`, `AudioFileWriter`, `SCStreamRecorder` (actor + watchdog), `CalendarService` (+pure filter logic), and `record`/`calendar` CLI subcommands landed; 33 unit tests green. **Remaining:** exercise live capture + TCC grants on the M5 (M1.4 acceptance) — cannot run in CI.
 **Goal:** headless dual-channel recorder writing clean session files; permissions verified end-to-end.
 - M1.1 `git init`; SwiftPM scaffold; `tatlin-cli record` subcommand.
 - M1.2 `SCStreamRecorder`: `capturesAudio + captureMicrophone`, separate `.audio`/`.microphone` outputs → two `AudioWriter`s (independent timestamp baselines) → `raw-system.wav` + `raw-mic.wav` (48 kHz/32-bit float mono).
@@ -122,6 +123,7 @@ actor ModelHost {               // ADR-11: one heavy model resident at a time
 - **Acceptance:** record a real 30-min Zoom/Meet/in-person session; both WAVs valid & independently playable; owner clearly isolated on mic channel; survives app kill mid-session (partial WAVs still valid); AirPods-mic path tested; starting during a scheduled meeting captures the right event metadata, and starting with no meeting yields a clean default name.
 
 ### Phase 1B — Model infrastructure + Eval harness  *(parallel; de-risks ADR-2/3/6)*
+**Status (2026-06-18): infrastructure code-complete & building.** `ModelManifest`, `ModelStore`, `ModelDownloader` (SHA-256), `CoreMLCompiler`, `ModelHost` (sequential residency), WER/DER/report harness, and `models`/`eval` CLI subcommands landed; 61 unit tests green. **Remaining:** (a) the concrete MLX/FluidAudio engine conformances in the `TatlinML` target (need on-device weights — next step); (b) fill exact HF file URLs + sha256 in the manifest; (c) run the actual ASR bake-off + DER on real audio (M1B.3/M1B.4 acceptance).
 **Goal:** prove model download/run plumbing and settle the ASR bake-off on real data.
 - M1B.1 `ModelManifest` (ids, URLs, SHA-256, size, license) + `ModelHost` actor: background `URLSession` download, checksum, CoreML compile + `.mlmodelc` cache, sequential load/unload, `MLX.GPU.set(cacheLimit:)`.
 - M1B.2 `ParakeetEngine` + `VoxtralEngine` (+ optional `WhisperKitEngine`) behind `ASREngine`.
