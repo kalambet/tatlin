@@ -45,6 +45,7 @@ struct CalendarPeek: AsyncParsableCommand {
         case .single(let snap):
             print("Resolution: single")
             print("Title: \(snap.title)")
+            print("Event ID: \(snap.eventIdentifier ?? "(none)")")
             if let start = snap.startDate, let end = snap.endDate {
                 print("Time: \(start) – \(end)")
             }
@@ -64,6 +65,7 @@ struct CalendarPeek: AsyncParsableCommand {
                     return " [\(s)–\(e)]"
                 }()
                 print("  \(snap.title)\(range) — \(snap.attendees.count) attendees")
+                print("    id: \(snap.eventIdentifier ?? "(none)")")
             }
             print("Pass --event-id <identifier> to tatlin record to select one.")
         }
