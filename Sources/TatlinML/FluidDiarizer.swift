@@ -45,14 +45,18 @@ import TatlinKit
 ///   `speakerId: String` and `embedding256: [Float]` (confirmed from code inspection).
 ///   Source: https://github.com/FluidInference/FluidAudio/blob/main/Sources/FluidAudio/Diarizer/Offline/Core/OfflineDiarizerManager.swift
 @available(macOS 15, *)
-public actor FluidDiarizer: DiarizerEngine {
+public final class FluidDiarizer: DiarizerEngine, @unchecked Sendable {
 
     // MARK: - DiarizerEngine
 
-    public nonisolated let modelID = "speaker-diarization-community-1"
+    public let modelID = "speaker-diarization-community-1"
 
     // MARK: - Private state
 
+    // A reference-type wrapper (not an actor) around FluidAudio's non-Sendable
+    // `OfflineDiarizerManager`, whose `process(_:)` is async — awaiting it from an actor
+    // trips Swift 6's "sending non-Sendable value" check. `ModelHost` guarantees single,
+    // serialized residency, so `@unchecked Sendable` with no internal locking is safe here.
     private var manager: OfflineDiarizerManager?
     private let modelDirectory: URL?
 
@@ -73,12 +77,10 @@ public actor FluidDiarizer: DiarizerEngine {
     public func load() async throws {
         guard manager == nil else { return }
 
-        // Build config with chunk-embedding export enabled so we can produce per-speaker vectors.
-        // VERIFY: OfflineDiarizerConfig mutable properties and exposeChunkEmbeddings field name.
-        // Source: https://github.com/FluidInference/FluidAudio/blob/main/Sources/FluidAudio/Diarizer/Offline/Core/OfflineDiarizerManager.swift
-        var config = OfflineDiarizerConfig.default
-        config.exposeChunkEmbeddings = true
-
+        // Default offline config (community-1 pipeline). Per-speaker embeddings come from
+        // `DiarizationResult.speakerDatabase`, which offline pipelines populate regardless.
+        // Source: .build/checkouts/FluidAudio/Sources/FluidAudio/Diarizer/Offline/Core/OfflineDiarizerTypes.swift:33
+        let config = OfflineDiarizerConfig()
         let m = OfflineDiarizerManager(config: config)
 
         // prepareModels downloads/compiles CoreML models.
@@ -119,13 +121,9 @@ public actor FluidDiarizer: DiarizerEngine {
 
     private func mapToDiarization(_ result: DiarizationResult) -> Diarization {
         // --- Speaker turns ---
-        // DiarizationResult.segments: array of segment objects.
-        // Confirmed fields (README example + code inspection):
-        //   .speakerId: String          — e.g. "S1", "S2"
-        //   .startTimeSeconds: Float    — turn start in seconds
-        //   .endTimeSeconds: Float      — turn end in seconds
-        // Source: https://github.com/FluidInference/FluidAudio/blob/main/README.md
-        //   and https://github.com/FluidInference/FluidAudio/blob/main/Sources/FluidAudio/Diarizer/Offline/Core/OfflineDiarizerManager.swift
+        // DiarizationResult.segments: [TimedSpeakerSegment] with speakerId/startTimeSeconds/
+        //   endTimeSeconds (Float) + embedding ([Float]).
+        // Source: .build/checkouts/FluidAudio/Sources/FluidAudio/Diarizer/Core/DiarizerTypes.swift:161,191
         let turns: [SpeakerTurn] = result.segments.map { seg in
             SpeakerTurn(
                 speaker: seg.speakerId,
@@ -135,37 +133,31 @@ public actor FluidDiarizer: DiarizerEngine {
         }
 
         // --- Per-speaker embeddings ---
-        // ChunkEmbedding:
-        //   .speakerId: String     — matches seg.speakerId ("S1", "S2", …)
-        //   .embedding256: [Float] — 256-d WeSpeaker embedding
-        // Source: code inspection of OfflineDiarizerManager.buildPublicChunkEmbeddings()
-        //   https://github.com/FluidInference/FluidAudio/blob/main/Sources/FluidAudio/Diarizer/Offline/Core/OfflineDiarizerManager.swift
-        //
-        // VERIFY: property name `embedding256` vs `embedding` vs `vector`.
-        // If the property is named differently, update the keypath below.
-        var speakerSums: [String: (sum: [Double], count: Int)] = [:]
-
-        if let chunks = result.chunkEmbeddings {
-            for chunk in chunks {
-                let key = chunk.speakerId
-                let vec = chunk.embedding256.map(Double.init)
-                if var existing = speakerSums[key] {
-                    for i in 0 ..< min(vec.count, existing.sum.count) {
-                        existing.sum[i] += vec[i]
-                    }
+        // Offline pipelines populate `speakerDatabase: [String: [Float]]?` directly
+        // (speakerId → representative embedding). Use it when present, else fall back to
+        // averaging per-segment embeddings.
+        // Source: .build/checkouts/FluidAudio/Sources/FluidAudio/Diarizer/Core/DiarizerTypes.swift:164
+        var embeddings: [String: SpeakerEmbedding] = [:]
+        if let db = result.speakerDatabase {
+            for (speaker, vec) in db {
+                embeddings[speaker] = SpeakerEmbedding(vector: vec)
+            }
+        } else {
+            var sums: [String: (sum: [Double], count: Int)] = [:]
+            for seg in result.segments where !seg.embedding.isEmpty {
+                let vec = seg.embedding.map(Double.init)
+                if var existing = sums[seg.speakerId] {
+                    for i in 0 ..< min(vec.count, existing.sum.count) { existing.sum[i] += vec[i] }
                     existing.count += 1
-                    speakerSums[key] = existing
+                    sums[seg.speakerId] = existing
                 } else {
-                    speakerSums[key] = (sum: vec, count: 1)
+                    sums[seg.speakerId] = (sum: vec, count: 1)
                 }
             }
-        }
-
-        var embeddings: [String: SpeakerEmbedding] = [:]
-        for (speaker, accumulated) in speakerSums {
-            let count = Double(accumulated.count)
-            let averaged = accumulated.sum.map { Float($0 / count) }
-            embeddings[speaker] = SpeakerEmbedding(vector: averaged)
+            for (speaker, acc) in sums {
+                let c = Double(acc.count)
+                embeddings[speaker] = SpeakerEmbedding(vector: acc.sum.map { Float($0 / c) })
+            }
         }
 
         return Diarization(turns: turns, embeddings: embeddings)

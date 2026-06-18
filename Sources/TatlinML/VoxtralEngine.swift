@@ -35,6 +35,7 @@
 
 import Foundation
 import MLX
+import MLXAudioCore
 import MLXAudioSTT
 import TatlinKit
 
@@ -70,9 +71,9 @@ public actor VoxtralEngine: ASREngine {
     /// Source: https://github.com/Blaizzy/mlx-audio-swift/blob/main/Sources/MLXAudioSTT/Models/VoxtralRealtime/VoxtralRealtime.swift
     public func load() throws {
         guard model == nil else { return }
-        // VERIFY: exact type name — VoxtralRealtimeModel vs VoxtralMini4BRealtime or similar.
-        // Source: https://github.com/Blaizzy/mlx-audio-swift/tree/main/Sources/MLXAudioSTT/Models/VoxtralRealtime
-        model = try VoxtralRealtimeModel.fromDirectory(modelDirectory, computeDType: .float16)
+        // fromDirectory(_:) — synchronous throws, no computeDType in 0.1.2.
+        // Source: .build/checkouts/mlx-audio-swift/Sources/MLXAudioSTT/Models/VoxtralRealtime/VoxtralRealtime.swift:377
+        model = try VoxtralRealtimeModel.fromDirectory(modelDirectory)
     }
 
     public func unload() {
@@ -101,18 +102,16 @@ public actor VoxtralEngine: ASREngine {
                   "See VoxtralEngine.swift module comment for details.")
         }
 
-        // Load audio at 16 kHz mono.
-        // VERIFY: same AudioUtils.loadAudioFile(url:sampleRate:) as ParakeetEngine.
-        // Source: https://github.com/Blaizzy/mlx-audio-swift/blob/main/Sources/MLXAudioCore/AudioUtils.swift
-        let samples: MLXArray = try AudioUtils.loadAudioFile(url: audioURL, sampleRate: 16000)
+        // Load audio at 16 kHz mono via the MLXAudioCore free function.
+        // Source: .build/checkouts/mlx-audio-swift/Sources/MLXAudioCore/AudioUtils.swift:58
+        let (_, samples) = try loadAudioArray(from: audioURL, sampleRate: 16000)
 
-        // Build generation parameters.
-        // STTGenerateParameters is shared across all STTGenerationModel conformers.
-        // Source: https://github.com/Blaizzy/mlx-audio-swift/blob/main/Sources/MLXAudioSTT/Generation.swift
+        // STTGenerateParameters.language is a non-optional String (default "English").
+        // Source: .build/checkouts/mlx-audio-swift/Sources/MLXAudioSTT/Generation.swift:3
         let params = STTGenerateParameters(
             maxTokens: 8192,
             temperature: 0.0,
-            language: options.languageHint
+            language: options.languageHint ?? "English"
         )
 
         // Synchronous generate — same protocol as Parakeet.
@@ -125,21 +124,20 @@ public actor VoxtralEngine: ASREngine {
     // MARK: - Private helpers
 
     private func mapToTranscript(_ output: STTOutput, languageHint: String?) -> Transcript {
-        let language = output.language.isEmpty ? languageHint : output.language
+        let language = output.language ?? languageHint
 
         guard let rawSegments = output.segments, !rawSegments.isEmpty else {
             let seg = TranscriptSegment(text: output.text, start: 0, end: 0, words: [])
             return Transcript(language: language, segments: [seg])
         }
 
-        // Map segments — word arrays are intentionally empty (see module comment).
-        let tatlinSegments: [TranscriptSegment] = rawSegments.map { seg in
-            TranscriptSegment(
-                text: seg.text,
-                start: seg.start,
-                end: seg.end,
-                words: []   // No word-level timestamps for Voxtral; see module doc-comment.
-            )
+        // segments are [[String: Any]] with keys "text"/"start"/"end"; word arrays stay empty
+        // (Voxtral exposes no word timestamps — see module doc-comment).
+        let tatlinSegments: [TranscriptSegment] = rawSegments.compactMap { dict in
+            guard let text = dict["text"] as? String,
+                  let start = dict["start"] as? Double,
+                  let end = dict["end"] as? Double else { return nil }
+            return TranscriptSegment(text: text, start: start, end: end, words: [])
         }
 
         return Transcript(language: language, segments: tatlinSegments)

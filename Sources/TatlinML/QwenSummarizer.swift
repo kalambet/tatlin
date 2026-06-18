@@ -115,41 +115,29 @@ public actor QwenSummarizer: LLMEngine {
         }
 
         // Map TatlinKit LLMMessage → mlx-swift-lm Chat.Message.
-        // Chat.Message factory methods:
-        //   .system(_:)    — for Role.system
-        //   .user(_:)      — for Role.user
-        //   .assistant(_:) — for Role.assistant
-        // Source: https://github.com/ml-explore/mlx-swift-lm/blob/main/Libraries/MLXLMCommon/Chat.swift
-        let chatMessages: [Chat.Message] = messages.map { msg in
-            switch msg.role {
-            case .system:    return .system(msg.content)
-            case .user:      return .user(msg.content)
-            case .assistant: return .assistant(msg.content)
-            }
-        }
-
-        // Build GenerateParameters.
-        // Confirmed fields from Evaluate.swift inspection:
-        //   temperature: Float, topP: Float, maxTokens: Int?
-        // Source: https://github.com/ml-explore/mlx-swift-lm/blob/main/Libraries/MLXLMCommon/Evaluate.swift
+        // GenerateParameters declares maxTokens before temperature/topP; match that order.
+        // Source: .build/checkouts/mlx-swift-lm/Libraries/MLXLMCommon/Evaluate.swift (GenerateParameters)
         let genParams = GenerateParameters(
+            maxTokens: parameters.maxTokens,
             temperature: Float(parameters.temperature),
-            topP: Float(parameters.topP),
-            maxTokens: parameters.maxTokens
+            topP: Float(parameters.topP)
         )
 
-        // Use ChatSession for single-turn completion.
-        // ChatSession.init(_ model:) — takes ModelContainer.
-        // ChatSession.respond(to messages:[Chat.Message]) async throws -> String
-        // Source: https://github.com/ml-explore/mlx-swift-lm/blob/main/Libraries/MLXLMCommon/ChatSession.swift
-        //
-        // VERIFY: The `respond(to:)` overload accepting [Chat.Message] exists and passes
-        // generateParameters.  If only a String overload exists, build a single user-turn
-        // string from the message array instead.
-        let session = ChatSession(container, generateParameters: genParams)
-        let response: String = try await session.respond(to: chatMessages)
+        // ChatSession exposes `init(_:instructions:…)` + `respond(to: String)` — there is no
+        // `[Chat.Message]` overload. Map our messages onto that surface: system turns become
+        // the session `instructions`; user/assistant turns are concatenated into the prompt.
+        // Source: .build/checkouts/mlx-swift-lm/Libraries/MLXLMCommon/ChatSession.swift:49,274
+        let instructions = messages.filter { $0.role == .system }
+            .map(\.content).joined(separator: "\n\n")
+        let prompt = messages.filter { $0.role != .system }
+            .map(\.content).joined(separator: "\n\n")
 
-        return response
+        let session = ChatSession(
+            container,
+            instructions: instructions.isEmpty ? nil : instructions,
+            generateParameters: genParams
+        )
+        return try await session.respond(to: prompt)
     }
 }
 

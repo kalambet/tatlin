@@ -26,11 +26,14 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.8.2"),
 
-        // --- Heavy ML stack (enable together with the TatlinML target below) ---
-        // .package(url: "https://github.com/ml-explore/mlx-swift-examples.git", from: "2.29.1"),
-        // .package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", from: "0.1.2"),
-        // .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.9.1"),
-        // .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "1.0.0"),
+        // --- Heavy ML stack (TatlinML target). mlx-audio-swift 0.1.2 pins mlx-swift-lm to
+        //     2.30.3 ..< 3.0.0, so MLXLLM/MLXLMCommon come from mlx-swift-lm (NOT
+        //     mlx-swift-examples) and must stay on the 2.x line. ---
+        .package(url: "https://github.com/ml-explore/mlx-swift.git", .upToNextMajor(from: "0.30.6")),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm.git", .upToNextMajor(from: "2.30.3")),
+        .package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", from: "0.1.2"),
+        .package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.9.1"),
+        .package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "1.0.0"),
     ],
     targets: [
         .target(
@@ -40,6 +43,7 @@ let package = Package(
             name: "tatlin",
             dependencies: [
                 "TatlinKit",
+                "TatlinML",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ]
         ),
@@ -48,17 +52,19 @@ let package = Package(
             dependencies: ["TatlinKit"]
         ),
 
-        // --- Concrete ML engines — enable locally with the deps above ---
-        // .target(
-        //     name: "TatlinML",
-        //     dependencies: [
-        //         "TatlinKit",
-        //         .product(name: "MLXAudio", package: "mlx-audio-swift"),
-        //         .product(name: "MLXLLM", package: "mlx-swift-examples"),
-        //         .product(name: "MLXLMCommon", package: "mlx-swift-examples"),
-        //         .product(name: "FluidAudio", package: "FluidAudio"),
-        //         .product(name: "WhisperKit", package: "WhisperKit"),
-        //     ]
-        // ),
+        // --- Concrete ML engines ---
+        .target(
+            name: "TatlinML",
+            dependencies: [
+                "TatlinKit",
+                .product(name: "MLX", package: "mlx-swift"),
+                .product(name: "MLXAudioSTT", package: "mlx-audio-swift"),
+                .product(name: "MLXAudioCore", package: "mlx-audio-swift"),
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                .product(name: "FluidAudio", package: "FluidAudio"),
+                .product(name: "WhisperKit", package: "WhisperKit"),
+            ]
+        ),
     ]
 )

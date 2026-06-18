@@ -23,6 +23,7 @@
 
 import Foundation
 import MLX
+import MLXAudioCore
 import MLXAudioSTT
 import TatlinKit
 
@@ -76,9 +77,10 @@ public actor ParakeetEngine: ASREngine {
     /// https://github.com/Blaizzy/mlx-audio-swift/blob/main/Sources/MLXAudioSTT/Models/Parakeet/ParakeetModel.swift
     public func load() throws {
         guard model == nil else { return }
-        // fromDirectory is a synchronous throws — loads weights from local files only.
-        // Source: https://github.com/Blaizzy/mlx-audio-swift/blob/main/Sources/MLXAudioSTT/Models/Parakeet/ParakeetModel.swift
-        model = try ParakeetModel.fromDirectory(modelDirectory, computeDType: .bfloat16)
+        // fromDirectory(_:) is a synchronous throws — loads weights from local files only
+        // (no computeDType parameter in mlx-audio-swift 0.1.2).
+        // Source: .build/checkouts/mlx-audio-swift/Sources/MLXAudioSTT/Models/Parakeet/ParakeetModel.swift:473
+        model = try ParakeetModel.fromDirectory(modelDirectory)
     }
 
     /// Release the model weights and allow the Metal heap to be reclaimed.
@@ -104,90 +106,57 @@ public actor ParakeetEngine: ASREngine {
             throw ASRError.modelNotLoaded
         }
 
-        // 1. Load audio samples.
-        // Parakeet expects a raw 16 kHz mono float32 MLXArray.
-        // AudioUtils.loadAudio is the mlx-audio-swift helper:
-        // VERIFY: exact function name — AudioUtils.loadAudioFile(url:) or similar.
-        // Source: https://github.com/Blaizzy/mlx-audio-swift/blob/main/Sources/MLXAudioCore/AudioUtils.swift
-        let samples: MLXArray = try AudioUtils.loadAudioFile(url: audioURL, sampleRate: 16000)
+        // 1. Load audio samples. `loadAudioArray(from:sampleRate:)` is a free function in
+        //    MLXAudioCore returning (sampleRate, MLXArray) of 16 kHz mono float32.
+        //    Source: .build/checkouts/mlx-audio-swift/Sources/MLXAudioCore/AudioUtils.swift:58
+        let (_, samples) = try loadAudioArray(from: audioURL, sampleRate: 16000)
 
-        // 2. Run inference.
-        // STTGenerationModel.generate(audio:generationParameters:) is synchronous;
-        // wrap in Task for cooperative cancellation.
-        // Source: https://github.com/Blaizzy/mlx-audio-swift/blob/main/Sources/MLXAudioSTT/Generation.swift
+        // 2. Run inference. `STTGenerateParameters.language` is a non-optional String
+        //    (default "English"). Parakeet-v3 is multilingual and auto-detects per segment;
+        //    pass the hint when set, else "English". (Tune language handling during eval.)
+        //    Source: .build/checkouts/mlx-audio-swift/Sources/MLXAudioSTT/Generation.swift:3
         let params = STTGenerateParameters(
             maxTokens: 8192,
             temperature: 0.0,
-            language: options.languageHint   // nil = auto-detect
+            language: options.languageHint ?? "English"
         )
 
-        // generate() is defined on STTGenerationModel and implemented by ParakeetModel.
-        // Source: https://github.com/Blaizzy/mlx-audio-swift/blob/main/Sources/MLXAudioSTT/Generation.swift
+        // generate() is synchronous; defined on STTGenerationModel, implemented by ParakeetModel.
         let output: STTOutput = model.generate(audio: samples, generationParameters: params)
 
         // 3. Map STTOutput → Transcript.
-        return try mapToTranscript(output, languageHint: options.languageHint)
+        return mapToTranscript(output, languageHint: options.languageHint)
     }
 
     // MARK: - Private helpers
 
-    private func mapToTranscript(_ output: STTOutput, languageHint: String?) throws -> Transcript {
-        // STTOutput fields confirmed from code inspection:
-        //   .text: String           — full concatenated transcript
-        //   .segments: [STTSegment]? — sentence-level segments (may be nil for very short audio)
-        //   .language: String       — BCP-47 language id detected or from params
-        // Source: https://github.com/Blaizzy/mlx-audio-swift/blob/main/Sources/MLXAudioSTT/Models/Parakeet/ParakeetModel.swift
-
-        let language = output.language.isEmpty ? languageHint : output.language
+    private func mapToTranscript(_ output: STTOutput, languageHint: String?) -> Transcript {
+        // STTOutput (mlx-audio-swift 0.1.2):
+        //   .text: String              — full concatenated transcript
+        //   .segments: [[String: Any]]? — SENTENCE-level dicts with keys "text"/"start"/"end"
+        //   .language: String?         — detected/param language
+        // Source: .build/checkouts/mlx-audio-swift/Sources/MLXAudioSTT/Models/GLMASR/STTOutput.swift:80
+        //         and .../Models/Parakeet/ParakeetAlignment.swift:13 (segments dict shape)
+        let language = output.language ?? languageHint
 
         guard let rawSegments = output.segments, !rawSegments.isEmpty else {
-            // No segments — build a single segment with no word timestamps (very short audio).
             let seg = TranscriptSegment(text: output.text, start: 0, end: 0, words: [])
             return Transcript(language: language, segments: [seg])
         }
 
-        // Map each STTSegment → TranscriptSegment + Word array.
-        //
-        // STTSegment (VERIFY: exact property names from compiled module):
-        //   .text: String        — segment/sentence text
-        //   .start: Double       — start time in seconds
-        //   .end: Double         — end time in seconds  (= start + sum of token durations)
-        //   .words: [STTWord]?   — per-word timing entries
-        //
-        // STTWord / ParakeetAlignedToken:
-        //   .text: String
-        //   .start: Double       — start time in seconds (confirmed from ParakeetModel.swift)
-        //   .duration: Double    — duration in seconds   (confirmed from ParakeetModel.swift)
-        //
-        // VERIFY: The library may name the per-segment word array `.tokens` rather than `.words`.
-        // Source: https://github.com/Blaizzy/mlx-audio-swift/blob/main/Sources/MLXAudioSTT/Models/Parakeet/ParakeetModel.swift
-
-        let tatlinSegments: [TranscriptSegment] = rawSegments.map { seg in
-            // Build word-level timings.
-            let words: [Word]
-            if let segWords = seg.words, !segWords.isEmpty {
-                words = segWords.map { w in
-                    Word(
-                        text: w.text,
-                        start: w.start,
-                        end: w.start + w.duration,
-                        confidence: nil   // Parakeet TDT doesn't expose per-token confidence
-                    )
-                }
-            } else {
-                // Fallback: segment-level timing, no word granularity.
-                words = []
-            }
-
-            return TranscriptSegment(
-                text: seg.text,
-                start: seg.start,
-                end: seg.end,
-                words: words
-            )
+        // The public API exposes SENTENCE-level timing only. Per-word token timings exist
+        // internally (ParakeetAlignedToken.start/.duration) but are not surfaced via STTOutput.
+        // We emit one Word spanning each sentence so the word-level aligner has a timed unit;
+        // attribution is therefore sentence-granular. (Word-level would require the internal
+        // ParakeetAlignedResult — a future enhancement; see BRINGUP.md Stage 5.)
+        let segments: [TranscriptSegment] = rawSegments.compactMap { dict in
+            guard let text = dict["text"] as? String,
+                  let start = dict["start"] as? Double,
+                  let end = dict["end"] as? Double else { return nil }
+            let word = Word(text: text, start: start, end: end, confidence: nil)
+            return TranscriptSegment(text: text, start: start, end: end, words: [word])
         }
-
-        return Transcript(language: language, segments: tatlinSegments)
+        return Transcript(language: language, segments: segments)
     }
 }
 

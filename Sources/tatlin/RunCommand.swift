@@ -1,10 +1,12 @@
 import ArgumentParser
 import Foundation
 import TatlinKit
+import TatlinML
 
 /// `tatlin run <session-id> [--from-stage <stage>]` — drive Stages 2–7 over a saved session
-/// (plan.md M2.8, ADR-10). Uses the **stub engines by default** so the pipeline runs with no
-/// ML dependencies; swap in the real trio via `EngineFactory` once TatlinML is enabled.
+/// (plan.md M2.8, ADR-10). Uses the **real MLX/FluidAudio engines** by default (requires
+/// downloaded model weights — see `tatlin models download`); pass `--stub` for an offline,
+/// dependency-free dry run with canned output.
 struct Run: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "run",
@@ -20,9 +22,14 @@ struct Run: AsyncParsableCommand {
     @Option(name: .long, help: "Destination vault directory for the final .md (default: the session dir).")
     var vault: String?
 
+    @Flag(name: .long, help: "Use deterministic stub engines (no model weights needed) for an offline dry run.")
+    var stub = false
+
     func run() async throws {
         let store = try SessionStore()
-        let engines = EngineFactory.make()
+        let engines = stub
+            ? EngineFactory.makeStub()
+            : EngineFactory.makeReal(modelStore: ModelStore(sessionStoreRoot: store.root))
         var config = BatchPipeline.Config()
         if let vault { config.vaultDirectory = URL(fileURLWithPath: vault, isDirectory: true) }
 
@@ -46,10 +53,9 @@ struct Run: AsyncParsableCommand {
 
 extension PipelineStage: ExpressibleByArgument {}
 
-// MARK: - Engine factory (TatlinML extension point)
+// MARK: - Engine factory
 
-/// Builds the engine trio the pipeline runs on. Stub engines today; the single swap-point
-/// for the real MLX/FluidAudio engines once the `TatlinML` target is enabled.
+/// Builds the engine trio the pipeline runs on.
 enum EngineFactory {
     struct Engines {
         var asr: any ASREngine
@@ -57,9 +63,15 @@ enum EngineFactory {
         var llm: any LLMEngine
     }
 
-    static func make() -> Engines {
-        // TODO: swap in TatlinML engine factory when the ML target is enabled
-        //   return Engines(asr: try ParakeetEngine(), diarizer: try FluidDiarizer(), llm: try QwenSummarizer())
+    /// Deterministic, dependency-free engines for offline dry runs and tests.
+    static func makeStub() -> Engines {
         Engines(asr: StubASREngine(), diarizer: StubDiarizer(), llm: StubLLMEngine())
+    }
+
+    /// The real MLX/FluidAudio engines (Parakeet ASR, FluidAudio diarizer, Qwen summarizer),
+    /// resolved against the model directories under `modelStore`. Requires downloaded weights.
+    static func makeReal(modelStore: ModelStore) -> Engines {
+        let trio = MLEngineFactory.make(store: modelStore, asrBackend: .parakeet)
+        return Engines(asr: trio.asr, diarizer: trio.diarizer, llm: trio.llm)
     }
 }
