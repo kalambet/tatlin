@@ -1,0 +1,26 @@
+# Swift / SPM
+.build/
+.swiftpm/
+Package.resolved
+*.xcodeproj
+*.xcworkspace
+
+# Xcode
+DerivedData/
+*.xcuserstate
+xcuserdata/
+
+# macOS
+.DS_Store
+
+# Tatlin local data — never commit models, recordings, or eval audio
+Models/
+/eval/audio/
+*.wav
+*.caf
+*.mlmodelc
+*.safetensors
+
+# Dev-only tooling artifacts
+tools/eval-golden/.venv/
+tools/eval-golden/__pycache__/
