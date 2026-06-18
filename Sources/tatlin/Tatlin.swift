@@ -12,6 +12,8 @@ struct TatlinCLI: AsyncParsableCommand {
             Record.self,
             CalendarPeek.self,
             Sessions.self,
+            Models.self,
+            Eval.self,
         ]
     )
 }
