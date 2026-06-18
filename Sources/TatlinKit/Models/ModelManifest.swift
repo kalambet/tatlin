@@ -129,27 +129,22 @@ public enum ModelManifest {
             license: "Apache-2.0"
         ),
 
-        // MARK: Diarization — pyannote speaker-diarization-community-1 via FluidInference CoreML
-        // HF repo: FluidInference/speaker-diarization-community-1 (GATED — CC-BY-4.0)
-        // The repo is gated on HF; user must accept the CC-BY-4.0 license before download.
-        // FluidAudio's prepareModels() handles the download internally; the manifest entry
-        // here is for display/attribution only (ModelStore does not download this directly).
-        // File URLs and sizes: VERIFY from https://huggingface.co/FluidInference/speaker-diarization-community-1/tree/main
-        // after accepting the gated license.
+        // MARK: Diarization — FluidAudio-managed CoreML models (NOT downloaded by Tatlin)
+        // Real HF repo: FluidInference/speaker-diarization-coreml (the `.diarizer` repo in
+        // FluidAudio's ModelNames.Repo) — files pyannote_segmentation + wespeaker_v2 plus the
+        // offline variants (Segmentation/FBank/Embedding/PldaRho). "community-1" is the pyannote
+        // *pipeline lineage* the config is tuned to, NOT a downloadable repo — there is no
+        // `FluidInference/speaker-diarization-community-1`.
+        //
+        // FluidAudio downloads + compiles these itself via OfflineDiarizerManager.prepareModels()
+        // (DownloadUtils.loadModels(.diarizer, variant: "offline")). This entry is for
+        // DISPLAY/ATTRIBUTION ONLY — `tatlin models download` does not fetch it (no files); the
+        // diarizer is provisioned the first time FluidDiarizer.load() runs.
         ModelSpec(
-            key: "speaker-diarization-community-1",
-            displayName: "FluidInference/speaker-diarization-community-1 (pyannote community-1, CoreML/ANE)",
+            key: "speaker-diarization-coreml",
+            displayName: "FluidInference/speaker-diarization-coreml (pyannote community-1 lineage; auto-managed by FluidAudio)",
             kind: .diarization,
-            files: [
-                // Placeholder — FluidAudio downloads and compiles these via prepareModels().
-                // Do NOT attempt to download these via ModelDownloader; use FluidDiarizer.load().
-                ModelFile(
-                    urlString: "", // Managed by FluidAudio; not downloaded by ModelDownloader.
-                    sha256: nil,
-                    sizeBytes: nil, // VERIFY total size after gated download
-                    relativePath: "config.json"
-                ),
-            ],
+            files: [],   // intentionally empty — provisioned by FluidAudio, not ModelDownloader
             license: "CC-BY-4.0"
         ),
 

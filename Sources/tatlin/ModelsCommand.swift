@@ -34,7 +34,12 @@ struct ModelsList: AsyncParsableCommand {
         print(String(repeating: "-", count: 85))
 
         for spec in catalogue {
-            let status = store.isPresent(spec) ? "installed" : "available"
+            let status: String
+            if spec.files.isEmpty {
+                status = "FluidAudio-managed"   // provisioned by the diarizer itself, not Tatlin
+            } else {
+                status = store.isPresent(spec) ? "installed" : "available"
+            }
             print(row(spec.key, spec.kind.rawValue, spec.license, status))
         }
     }
@@ -60,6 +65,13 @@ struct ModelsDownload: AsyncParsableCommand {
         guard let spec = ModelManifest.default.first(where: { $0.key == key }) else {
             print("Unknown model key '\(key)'. Run `tatlin models list` to see available models.")
             throw ExitCode.failure
+        }
+
+        guard !spec.files.isEmpty else {
+            print("\(spec.key) is managed by FluidAudio — it is downloaded and compiled "
+                + "automatically the first time diarization runs (FluidDiarizer.load()). "
+                + "Nothing to download here.")
+            return
         }
 
         let store = try makeModelStore()
