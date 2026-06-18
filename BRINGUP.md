@@ -18,14 +18,24 @@ getting a real meeting → real notes. Do the steps in order; each is independen
 > `GIT_CONFIG_GLOBAL` (empty) to force plain HTTPS. If you re-resolve and it fails on SSH, either
 > unlock 1Password or run: `GIT_CONFIG_GLOBAL=/tmp/empty swift package resolve`.
 >
-> 🚧 **KNOWN BLOCKER — MLX needs an Xcode build, not `swift run`.** Plain SwiftPM cannot compile
-> mlx-swift's Metal shaders into `default.metallib`, so any MLX-backed command (`tatlin transcribe`,
-> `tatlin run` with real engines) fails at GPU init with *"Failed to load the default metallib"*.
-> Confirmed end-to-end here: Parakeet weights **download and load fine**, but inference can't start
-> under `swift run`. **Fix = build through Xcode** (which compiles + bundles the metallib) — i.e.
-> the Phase 3 `.app` target (ADR-9), or `xcodebuild -scheme tatlin`. The `--stub` pipeline and all
-> non-MLX commands work under `swift run` today. Refs:
-> [ml-explore/mlx#2061](https://github.com/ml-explore/mlx/pull/2061),
+> ✅ **MLX inference works — but ONLY via an Xcode build, not `swift run`.** Plain SwiftPM cannot
+> compile mlx-swift's Metal shaders, so MLX-backed commands (`tatlin transcribe`, `tatlin run` with
+> real engines) fail under `swift run` with *"Failed to load the default metallib."* **Resolved**
+> (verified 2026-06-18 — real Parakeet transcription ran successfully) with two one-time steps:
+>
+> ```bash
+> # 1. Xcode 26 ships the Metal Toolchain as a separate component (~688 MB) — install once:
+> xcodebuild -downloadComponent MetalToolchain
+> # 2. Build via Xcode (compiles + bundles default.metallib):
+> xcodebuild -scheme tatlin -destination 'platform=macOS,arch=arm64' \
+>   -derivedDataPath .xcode-build -configuration Debug CODE_SIGNING_ALLOWED=NO build
+> # 3. Run the Xcode-built binary (the mlx-swift_Cmlx.bundle/default.metallib sits beside it):
+> .xcode-build/Build/Products/Debug/tatlin transcribe <audio>
+> ```
+>
+> `swift run`/`swift test` remain the fast path for everything non-MLX (`--stub` pipeline, calendar,
+> sessions, eval, downloads). Phase 3 makes this seamless by shipping a real Xcode `.app` (ADR-9).
+> Refs: [ml-explore/mlx#2061](https://github.com/ml-explore/mlx/pull/2061),
 > [swama#30](https://github.com/Trans-N-ai/swama/issues/30), [jan#8046](https://github.com/janhq/jan/issues/8046).
 
 ---
@@ -184,4 +194,4 @@ Developer-ID notarization + GitHub Releases.
 | `tatlin models list` / `download <key>` | ✅ working (`verify` TODO) |
 | `tatlin eval wer --reference --hypothesis` | ✅ working |
 | `tatlin run <id> [--from-stage] [--vault] [--stub]` | ✅ `--stub` works under `swift run`; real engines need an Xcode build (metallib) |
-| `tatlin transcribe <audio> [--model-key]` | ✅ debug ASR; downloads+loads work, inference needs an Xcode build (metallib) |
+| `tatlin transcribe <audio> [--model-key]` | ✅ real Parakeet ASR verified (via Xcode-built binary) |

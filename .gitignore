@@ -8,6 +8,7 @@
 
 # Xcode
 DerivedData/
+.xcode-build/
 *.xcuserstate
 xcuserdata/
 
