@@ -9,6 +9,8 @@ struct TatlinCLI: AsyncParsableCommand {
         abstract: "Local-first, on-device macOS meeting note-taker.",
         version: Tatlin.version,
         subcommands: [
+            Record.self,
+            CalendarPeek.self,
             Sessions.self,
         ]
     )
