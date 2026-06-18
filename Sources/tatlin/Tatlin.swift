@@ -15,6 +15,7 @@ struct TatlinCLI: AsyncParsableCommand {
             Models.self,
             Eval.self,
             Run.self,
+            Transcribe.self,
         ]
     )
 }

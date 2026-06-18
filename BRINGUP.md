@@ -17,6 +17,16 @@ getting a real meeting → real notes. Do the steps in order; each is independen
 > SSH agent was refusing to sign, so `swift package resolve` was run with a throwaway
 > `GIT_CONFIG_GLOBAL` (empty) to force plain HTTPS. If you re-resolve and it fails on SSH, either
 > unlock 1Password or run: `GIT_CONFIG_GLOBAL=/tmp/empty swift package resolve`.
+>
+> 🚧 **KNOWN BLOCKER — MLX needs an Xcode build, not `swift run`.** Plain SwiftPM cannot compile
+> mlx-swift's Metal shaders into `default.metallib`, so any MLX-backed command (`tatlin transcribe`,
+> `tatlin run` with real engines) fails at GPU init with *"Failed to load the default metallib"*.
+> Confirmed end-to-end here: Parakeet weights **download and load fine**, but inference can't start
+> under `swift run`. **Fix = build through Xcode** (which compiles + bundles the metallib) — i.e.
+> the Phase 3 `.app` target (ADR-9), or `xcodebuild -scheme tatlin`. The `--stub` pipeline and all
+> non-MLX commands work under `swift run` today. Refs:
+> [ml-explore/mlx#2061](https://github.com/ml-explore/mlx/pull/2061),
+> [swama#30](https://github.com/Trans-N-ai/swama/issues/30), [jan#8046](https://github.com/janhq/jan/issues/8046).
 
 ---
 
@@ -173,4 +183,5 @@ Developer-ID notarization + GitHub Releases.
 | `tatlin record` | ✅ code-complete (needs grants; verify Stage 1) |
 | `tatlin models list` / `download <key>` | ✅ working (`verify` TODO) |
 | `tatlin eval wer --reference --hypothesis` | ✅ working |
-| `tatlin run <id> [--from-stage] [--vault] [--stub]` | ✅ real engines by default; `--stub` = offline dry run |
+| `tatlin run <id> [--from-stage] [--vault] [--stub]` | ✅ `--stub` works under `swift run`; real engines need an Xcode build (metallib) |
+| `tatlin transcribe <audio> [--model-key]` | ✅ debug ASR; downloads+loads work, inference needs an Xcode build (metallib) |
