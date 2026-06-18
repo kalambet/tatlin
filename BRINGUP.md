@@ -4,17 +4,27 @@ Everything built so far (`scaffold` → Phase 2) compiles and is unit-tested in 
 engines**. This guide is the ordered checklist for taking it onto the **M5 Pro (macOS 26)** and
 getting a real meeting → real notes. Do the steps in order; each is independently testable.
 
-> Quick status: `swift build` + `swift test` (88 tests) are green today with stubs. The real
-> ML engines (`Sources/TatlinML/`) are written but **not yet compiled** — Stage 2 below is where
-> that happens. Detailed per-API notes live in `Sources/TatlinML/README.md`.
+> Quick status (updated 2026-06-18): `TatlinML` is **enabled and compiling** against the real
+> MLX/FluidAudio APIs — all the original `// VERIFY` gaps are closed (Stage 2 done). `tatlin run`
+> uses the real engines by default. What remains is on hardware: **download weights** (Stage 3),
+> **run on real audio** (Stage 4), and **the eval pass** (Stage 5) — plus Stage 1 live capture.
+>
+> ⚠️ **Build with `swift build --product tatlin`**, not bare `swift build`: FluidAudio's *own*
+> `FluidAudioCLI` benchmark target hits a compiler type-check-timeout (a bug in their code, in a
+> target we don't use). `swift run tatlin …` and `swift test` are unaffected.
+>
+> ⚠️ **Dependency resolution needs HTTPS.** Your global git rewrites GitHub→SSH and the 1Password
+> SSH agent was refusing to sign, so `swift package resolve` was run with a throwaway
+> `GIT_CONFIG_GLOBAL` (empty) to force plain HTTPS. If you re-resolve and it fails on SSH, either
+> unlock 1Password or run: `GIT_CONFIG_GLOBAL=/tmp/empty swift package resolve`.
 
 ---
 
 ## Stage 0 — Sanity check the green core (5 min)
 
 ```bash
-swift build          # expect: Build complete!
-swift test           # expect: 88 tests pass
+swift build --product tatlin   # expect: Build of product 'tatlin' complete!  (NOT bare `swift build`)
+swift test                     # expect: 88 tests pass
 swift run tatlin --help
 swift run tatlin models list
 ```
@@ -50,56 +60,23 @@ CI. Do it before the ML work so capture is proven independently.
 
 ---
 
-## Stage 2 — Enable the `TatlinML` target
+## Stage 2 — Enable the `TatlinML` target ✅ DONE (2026-06-18)
 
-This pulls the heavy MLX/Metal graph (first resolve/build is slow — minutes). Need ~50 GB free.
+Already done in-repo: `Package.swift` has the `TatlinML` target + deps active (mlx-swift-lm
+pinned **2.x** to match mlx-audio-swift 0.1.2; resolved set committed in `Package.resolved` —
+FluidAudio **0.15.4**, mlx-swift 0.31.4, mlx-swift-lm 2.31.3), all `// VERIFY` API gaps are
+closed against the resolved sources, and `tatlin run` wires the real engines via
+`MLEngineFactory`. `swift build --product tatlin` compiles cleanly.
 
-### 2a. `Package.swift` — uncomment the deps and target
-In the `dependencies:` array, uncomment the four ML packages. **Use `mlx-swift-lm`, not
-`mlx-swift-examples`** (the `MLXLLM`/`MLXLMCommon` products moved there):
+What got resolved (for the record): `loadAudioArray(from:sampleRate:)` is the audio loader;
+`ParakeetModel.fromDirectory(_:)` takes no `computeDType`; `STTOutput.segments` is
+`[[String:Any]]` at **sentence** granularity (word-level token timing isn't surfaced by the
+public API — see Stage 5); `GenerateParameters(maxTokens:…)` arg order; `ChatSession` has no
+`[Chat.Message]` overload (system→`instructions`, rest→`respond(to:)`); FluidAudio 0.15.4 uses
+`OfflineDiarizerManager.process(url) -> DiarizationResult` with `.segments` + `.speakerDatabase`.
 
-```swift
-.package(url: "https://github.com/ml-explore/mlx-swift-lm.git", from: "2.29.1"),
-.package(url: "https://github.com/Blaizzy/mlx-audio-swift.git", from: "0.1.2"),
-.package(url: "https://github.com/FluidInference/FluidAudio.git", from: "0.9.1"),
-.package(url: "https://github.com/argmaxinc/WhisperKit.git", from: "1.0.0"),
-```
-
-Uncomment the `TatlinML` target. Fix the product names to match what `swift package describe`
-actually reports after resolving (the commented stub guessed `MLXAudio`; the real products are
-likely `MLXAudioSTT` + `MLXAudioCore`, and the LLM package is `mlx-swift-lm`):
-
-```swift
-.target(
-    name: "TatlinML",
-    dependencies: [
-        "TatlinKit",
-        .product(name: "MLXAudioSTT", package: "mlx-audio-swift"),
-        .product(name: "MLXAudioCore", package: "mlx-audio-swift"),
-        .product(name: "MLXLLM", package: "mlx-swift-lm"),
-        .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-        .product(name: "FluidAudio", package: "FluidAudio"),
-        .product(name: "WhisperKit", package: "WhisperKit"),
-    ]
-),
-```
-
-Add `TatlinML` to the `tatlin` executable target's `dependencies`.
-
-```bash
-swift package resolve
-swift package describe | grep -i product   # confirm exact product names; fix Package.swift if needed
-```
-
-### 2b. Close the `// VERIFY` API gaps
-`TatlinML` was written against the libraries' published source but **could not be compiled**, so
-~13 API touch-points are marked. Build and fix them iteratively:
-
-```bash
-swift build 2>&1 | tee /tmp/tatlinml-build.log    # first compile will surface the real errors
-grep -rn "VERIFY" Sources/TatlinML/                 # the checklist, each with a source URL
-```
-Full annotated list with source links: **`Sources/TatlinML/README.md` → "Known Gaps / VERIFY items"**. The high-priority ones: Parakeet `STTSegment.words` vs `.tokens`, the audio-load helper name, the `mlx-swift-lm` `loadContainer`/`ChatSession` API, and FluidAudio's `exposeChunkEmbeddings` / `embedding256` names.
+The first build compiles mlx-swift's Metal kernels (slow, minutes; cached after). Need ~50 GB
+free for weights. The detailed per-engine API notes live in `Sources/TatlinML/README.md`.
 
 ### 2c. Wire the real engines into the CLI
 In `Sources/tatlin/RunCommand.swift`, add `import TatlinML` and replace the body of
@@ -196,4 +173,4 @@ Developer-ID notarization + GitHub Releases.
 | `tatlin record` | ✅ code-complete (needs grants; verify Stage 1) |
 | `tatlin models list` / `download <key>` | ✅ working (`verify` TODO) |
 | `tatlin eval wer --reference --hypothesis` | ✅ working |
-| `tatlin run <id> [--from-stage] [--vault]` | ✅ with stubs; real engines after Stage 2 |
+| `tatlin run <id> [--from-stage] [--vault] [--stub]` | ✅ real engines by default; `--stub` = offline dry run |
