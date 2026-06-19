@@ -95,10 +95,7 @@ public actor QwenSummarizer: LLMEngine {
 
     public func unload() {
         container = nil
-        // Drop KV cache and weight cache.
-        // VERIFY: MLX.GPU.clearCache() API name.
-        // Source: https://github.com/ml-explore/mlx-swift (GPU.swift)
-        MLX.GPU.clearCache()
+        MLX.Memory.clearCache()
     }
 
     // MARK: - LLMEngine conformance

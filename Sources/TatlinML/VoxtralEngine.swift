@@ -78,7 +78,7 @@ public actor VoxtralEngine: ASREngine {
 
     public func unload() {
         model = nil
-        MLX.GPU.clearCache()
+        MLX.Memory.clearCache()
     }
 
     // MARK: - ASREngine conformance

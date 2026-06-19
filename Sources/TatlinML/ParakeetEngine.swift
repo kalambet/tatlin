@@ -86,10 +86,7 @@ public actor ParakeetEngine: ASREngine {
     /// Release the model weights and allow the Metal heap to be reclaimed.
     public func unload() {
         model = nil
-        // Clear the MLX GPU cache so the next stage can allocate.
-        // VERIFY: exact API — MLX.GPU.clearCache() vs MLX.GPU.set(cacheLimit: 0) vs similar.
-        // Source: https://github.com/ml-explore/mlx-swift (check MLX/GPU.swift)
-        MLX.GPU.clearCache()
+        MLX.Memory.clearCache()
     }
 
     // MARK: - ASREngine conformance
