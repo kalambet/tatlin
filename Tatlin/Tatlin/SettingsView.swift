@@ -2,6 +2,14 @@ import AppKit
 import SwiftUI
 import TatlinKit
 
+private let calendarSkipListPlaceholder = """
+Out of Office
+OOO
+Focus Time
+Focus
+Busy
+"""
+
 /// Settings window (M3.6): vault path, audio source, output language, owner name, models.
 /// Persisted to `UserDefaults` via `@AppStorage`; read back by `AppSettings.current()`.
 struct SettingsView: View {
@@ -9,6 +17,7 @@ struct SettingsView: View {
     @AppStorage("audioSource") private var audioSource = "system"
     @AppStorage("outputLanguage") private var outputLanguage = "match"
     @AppStorage("ownerName") private var ownerName = "You"
+    @AppStorage("calendarSkipList") private var calendarSkipListRaw = ""
 
     @Environment(ModelCatalog.self) private var catalog
 
@@ -68,6 +77,32 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.radioGroup)
                 TextField("Your name", text: $ownerName)
+            }
+
+            Section {
+                TextField(
+                    "Skip-list",
+                    text: $calendarSkipListRaw,
+                    prompt: Text(calendarSkipListPlaceholder),
+                    axis: .vertical
+                )
+                .lineLimit(3...8)
+                .textFieldStyle(.roundedBorder)
+                .font(.body.monospaced())
+
+                HStack {
+                    Spacer()
+                    Button("Reset to defaults") {
+                        calendarSkipListRaw = calendarSkipListPlaceholder
+                    }
+                    .disabled(calendarSkipListRaw == calendarSkipListPlaceholder)
+                }
+            } header: {
+                Text("Calendar skip-list")
+            } footer: {
+                Text("One title per line, case-insensitive. Matching events are treated as non-meetings and excluded from the Start picker. Leave blank to use the defaults shown as placeholder.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)

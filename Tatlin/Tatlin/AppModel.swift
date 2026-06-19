@@ -87,10 +87,13 @@ final class AppModel {
             do {
                 let now = Date()
 
-                // Calendar peek (ADR-13). Silent on denial / no match.
+                // Calendar peek (ADR-13). Silent on denial / no match. Skip-list is
+                // read fresh from Settings each time so an edit takes effect on the
+                // next Start without a relaunch.
+                let settings = AppSettings.current()
                 var title = Session.defaultTitle(for: now)
                 var event: EventSnapshot?
-                switch await CalendarService().currentCandidates(at: now) {
+                switch await CalendarService(skipList: settings.calendarSkipList).currentCandidates(at: now) {
                 case .none:                 break
                 case .single(let snap):     title = snap.title; event = snap
                 case .multiple(let snaps):  if let first = snaps.first { title = first.title; event = first }
@@ -206,6 +209,8 @@ struct AppSettings {
     var audioSource: BatchPipeline.AudioSource
     var outputLanguage: SummaryPrompt.OutputLanguage
     var ownerName: String
+    /// Resolved skip-list: the user's custom entries when non-empty, else `defaultSkipList`.
+    var calendarSkipList: [String]
 
     static func current() -> AppSettings {
         let defaults = UserDefaults.standard
@@ -220,6 +225,14 @@ struct AppSettings {
         }
 
         let owner = defaults.string(forKey: "ownerName") ?? "You"
+
+        // Skip-list: empty editor → defaults; otherwise newline-split + trim + drop blanks.
+        let rawSkip = defaults.string(forKey: "calendarSkipList") ?? ""
+        let parsed = rawSkip.split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let skipList = parsed.isEmpty ? defaultSkipList : parsed
+
         // Sandboxed (ADR-9a): the only writable vault URL is the one resolved from the
         // stored security-scoped bookmark. A plain path string from @AppStorage is
         // display-only and can't be written to.
@@ -227,7 +240,8 @@ struct AppSettings {
             vaultDirectory: VaultBookmark.resolve(),
             audioSource: source,
             outputLanguage: language,
-            ownerName: owner.isEmpty ? "You" : owner
+            ownerName: owner.isEmpty ? "You" : owner,
+            calendarSkipList: skipList
         )
     }
 }
