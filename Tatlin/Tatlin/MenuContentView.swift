@@ -16,6 +16,7 @@ struct MenuContentView: View {
             Button(action: model.toggle) {
                 Label(buttonTitle, systemImage: buttonSymbol)
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .disabled(model.isBusy)
             .keyboardShortcut(.defaultAction)
@@ -26,6 +27,7 @@ struct MenuContentView: View {
                 } label: {
                     Label("Open last notes", systemImage: "doc.text")
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
                 }
             }
 
@@ -34,12 +36,14 @@ struct MenuContentView: View {
             SettingsLink {
                 Label("Settings…", systemImage: "gearshape")
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             Button(role: .destructive) {
                 NSApplication.shared.terminate(nil)
             } label: {
                 Label("Quit Tatlin", systemImage: "power")
                     .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
         }
         .buttonStyle(.plain)

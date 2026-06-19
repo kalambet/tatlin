@@ -21,6 +21,15 @@ struct SettingsView: View {
         }
         .frame(width: 560, height: 420)
         .scenePadding()
+        .onAppear {
+            // LSUIElement=YES apps don't auto-activate when the Settings scene opens, so the
+            // window lands behind whatever was foreground. Force activation + front-order.
+            NSApp.activate(ignoringOtherApps: true)
+            if let window = NSApp.keyWindow ?? NSApp.windows.last(where: { $0.canBecomeKey }) {
+                window.makeKeyAndOrderFront(nil)
+                window.orderFrontRegardless()
+            }
+        }
     }
 
     // MARK: - General

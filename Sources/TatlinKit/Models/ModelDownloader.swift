@@ -129,10 +129,17 @@ public actor ModelDownloader {
 
     // MARK: - Private helpers
 
-    /// Stream-download `url` into `destination`, calling `onProgress` with each chunk.
+    /// Stream-download `url` into `destination`, calling `onProgress` as data arrives.
     ///
-    /// `URLSession` is intentionally scoped to this call (not stored on the actor) because
-    /// `URLSession` is non-Sendable and would violate strict concurrency if stored.
+    /// Uses the completion-handler `downloadTask(with:completionHandler:)` API and a
+    /// `DispatchSource` timer that polls `task.countOfBytesReceived` every 250 ms. We tried
+    /// both the per-call and session-level delegate paths with the async
+    /// `URLSession.download(...)` overloads, but `URLSessionDownloadDelegate.didWriteData`
+    /// is unreliable on the async path — events only fire at file completion, leaving
+    /// multi-GB downloads (Qwen3 shards) looking frozen.
+    ///
+    /// Bridged into async/await via `withCheckedThrowingContinuation`. `URLSession.shared`
+    /// is used so we don't pay for per-call session setup/teardown.
     private func downloadFile(
         from url: URL,
         to destination: URL,
@@ -140,37 +147,56 @@ public actor ModelDownloader {
         file: ModelFile,
         onProgress: @Sendable @escaping (DownloadProgress) -> Void
     ) async throws {
-        let (localTmp, response): (URL, URLResponse)
-        do {
-            (localTmp, response) = try await URLSession.shared.download(from: url)
-        } catch {
-            throw DownloadError.networkError(underlying: error)
+        let (stagingURL, response): (URL, URLResponse) = try await withCheckedThrowingContinuation { cont in
+            let poller = ProgressPoller(spec: spec, file: file, onProgress: onProgress)
+            let task = URLSession.shared.downloadTask(with: url) { tmpURL, response, error in
+                poller.stop()
+                if let error {
+                    cont.resume(throwing: DownloadError.networkError(underlying: error))
+                    return
+                }
+                guard let tmpURL, let response else {
+                    cont.resume(throwing: DownloadError.networkError(underlying: URLError(.unknown)))
+                    return
+                }
+                // tmpURL is in /tmp and gets deleted when this closure returns; move it to a
+                // staging location we control so the caller can verify + atomically move it.
+                let staging = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+                do {
+                    try FileManager.default.moveItem(at: tmpURL, to: staging)
+                    cont.resume(returning: (staging, response))
+                } catch {
+                    cont.resume(throwing: DownloadError.filesystemError(underlying: error))
+                }
+            }
+            poller.start(task: task)
+            task.resume()
         }
+        defer { try? FileManager.default.removeItem(at: stagingURL) }
 
         if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            try? FileManager.default.removeItem(at: localTmp)
             throw DownloadError.httpError(statusCode: http.statusCode, url: url)
         }
 
-        // Move URLSession temp file to our staging path.
+        // Move staging file into our destination tmp path (caller atomically renames).
         do {
             if FileManager.default.fileExists(atPath: destination.path) {
                 try FileManager.default.removeItem(at: destination)
             }
-            try FileManager.default.moveItem(at: localTmp, to: destination)
+            try FileManager.default.moveItem(at: stagingURL, to: destination)
         } catch {
             throw DownloadError.filesystemError(underlying: error)
         }
 
-        // Emit final progress.
+        // Final "we're done" progress so the row hits 100% even if the last timer tick
+        // landed just before completion.
         let size = (try? FileManager.default.attributesOfItem(atPath: destination.path)[.size] as? Int64) ?? 0
-        let progress = DownloadProgress(
+        onProgress(DownloadProgress(
             spec: spec,
             file: file,
             bytesReceived: size,
             bytesExpected: file.sizeBytes ?? size
-        )
-        onProgress(progress)
+        ))
     }
 
     /// Compute the hex SHA-256 of a file at `url` using CryptoKit.
@@ -183,5 +209,61 @@ public actor ModelDownloader {
         }
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+// MARK: - Progress poller
+
+/// Reads `URLSessionDownloadTask.countOfBytesReceived` on a 250 ms `DispatchSource` timer
+/// and forwards `DownloadProgress` events. Used because the delegate path
+/// (`URLSessionDownloadDelegate.didWriteData`) is unreliable on the async URLSession
+/// overloads — polling Foundation's `Progress`-equivalent counters is consistent.
+///
+/// `@unchecked Sendable` is justified: timer + task are touched only under the lock.
+private final class ProgressPoller: @unchecked Sendable {
+    private let spec: ModelSpec
+    private let file: ModelFile
+    private let onProgress: @Sendable (DownloadProgress) -> Void
+    private let lock = NSLock()
+    private var timer: DispatchSourceTimer?
+    private weak var task: URLSessionDownloadTask?
+
+    init(
+        spec: ModelSpec,
+        file: ModelFile,
+        onProgress: @Sendable @escaping (DownloadProgress) -> Void
+    ) {
+        self.spec = spec
+        self.file = file
+        self.onProgress = onProgress
+    }
+
+    func start(task: URLSessionDownloadTask) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.task = task
+        let t = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        t.schedule(deadline: .now() + 0.25, repeating: 0.25)
+        t.setEventHandler { [weak self] in self?.tick() }
+        timer = t
+        t.resume()
+    }
+
+    func stop() {
+        lock.lock()
+        defer { lock.unlock() }
+        timer?.cancel()
+        timer = nil
+    }
+
+    private func tick() {
+        lock.lock()
+        let task = self.task
+        lock.unlock()
+        guard let task, task.state == .running else { return }
+        let written = task.countOfBytesReceived
+        let expected = task.countOfBytesExpectedToReceive
+        let exp: Int64? = expected > 0 ? expected : file.sizeBytes
+        onProgress(DownloadProgress(spec: spec, file: file, bytesReceived: written, bytesExpected: exp))
     }
 }
