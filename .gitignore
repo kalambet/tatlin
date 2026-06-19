@@ -3,6 +3,12 @@
 .swiftpm/
 *.xcodeproj
 *.xcworkspace
+# The menubar app's Xcode project IS tracked; un-ignore the project and the
+# embedded workspace, then re-exclude user-specific state below.
+!/Tatlin/Tatlin.xcodeproj
+!/Tatlin/Tatlin.xcodeproj/project.xcworkspace
+/Tatlin/Tatlin.xcodeproj/xcuserdata/
+/Tatlin/Tatlin.xcodeproj/project.xcworkspace/xcuserdata/
 # Package.resolved IS committed — pins the fragile pre-1.0 MLX/FluidAudio versions
 # to the verified working set.
 
