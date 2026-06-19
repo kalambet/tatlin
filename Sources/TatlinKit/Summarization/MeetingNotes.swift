@@ -90,4 +90,8 @@ public protocol LLMEngine: Sendable {
     var modelID: String { get }
     /// Run a chat completion and return the raw assistant text.
     func complete(messages: [LLMMessage], parameters: LLMParameters) async throws -> String
+    /// Load model weights into memory before completion. Idempotent.
+    func load() async throws
+    /// Release model weights and reclaim memory.
+    func unload() async
 }

@@ -22,6 +22,9 @@ struct Run: AsyncParsableCommand {
     @Option(name: .long, help: "Destination vault directory for the final .md (default: the session dir).")
     var vault: String?
 
+    @Option(name: .long, help: "Primary channel for ASR + diarization: system (remote meeting) or mic (in-person). Default: system.")
+    var source: BatchPipeline.AudioSource = .system
+
     @Flag(name: .long, help: "Use deterministic stub engines (no model weights needed) for an offline dry run.")
     var stub = false
 
@@ -31,6 +34,7 @@ struct Run: AsyncParsableCommand {
             ? EngineFactory.makeStub()
             : EngineFactory.makeReal(modelStore: ModelStore(sessionStoreRoot: store.root))
         var config = BatchPipeline.Config()
+        config.audioSource = source
         if let vault { config.vaultDirectory = URL(fileURLWithPath: vault, isDirectory: true) }
 
         let pipeline = BatchPipeline(
@@ -52,6 +56,7 @@ struct Run: AsyncParsableCommand {
 // MARK: - ArgumentParser conformance for PipelineStage
 
 extension PipelineStage: ExpressibleByArgument {}
+extension BatchPipeline.AudioSource: ExpressibleByArgument {}
 
 // MARK: - Engine factory
 

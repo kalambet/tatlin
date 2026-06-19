@@ -36,6 +36,17 @@ public struct BatchPipeline: Sendable {
 
     // MARK: - Config
 
+    /// Which captured channel feeds ASR + diarization.
+    public enum AudioSource: String, Sendable, CaseIterable {
+        /// System-audio channel (remote participants). Default — the owner is on the mic,
+        /// remote speakers on system, so the mic doubles as a high-precision owner anchor.
+        case system
+        /// Microphone channel — for in-person meetings where everyone is captured by the mic
+        /// and the system channel is silent. Owner-mic VAD is disabled in this mode (the mic
+        /// is no longer owner-exclusive); owner identity falls back to enrollment/roster/LLM.
+        case mic
+    }
+
     public struct Config: Sendable {
         public var outputLanguage: SummaryPrompt.OutputLanguage
         public var ownerName: String
@@ -44,6 +55,8 @@ public struct BatchPipeline: Sendable {
         /// Destination vault directory for the final `.md`. Defaults to the session dir.
         public var vaultDirectory: URL?
         public var llmParameters: LLMParameters
+        /// Channel that feeds ASR + diarization. Defaults to `.system`.
+        public var audioSource: AudioSource
 
         public init(
             outputLanguage: SummaryPrompt.OutputLanguage = .matchMeeting,
@@ -51,7 +64,8 @@ public struct BatchPipeline: Sendable {
             ownerLabel: String = "Owner",
             enrollmentThreshold: Double = 0.7,
             vaultDirectory: URL? = nil,
-            llmParameters: LLMParameters = LLMParameters()
+            llmParameters: LLMParameters = LLMParameters(),
+            audioSource: AudioSource = .system
         ) {
             self.outputLanguage = outputLanguage
             self.ownerName = ownerName
@@ -59,6 +73,7 @@ public struct BatchPipeline: Sendable {
             self.enrollmentThreshold = enrollmentThreshold
             self.vaultDirectory = vaultDirectory
             self.llmParameters = llmParameters
+            self.audioSource = audioSource
         }
     }
 
@@ -87,10 +102,14 @@ public struct BatchPipeline: Sendable {
         let transcript: Transcript
         if shouldRun(.transcription, from: fromStage) {
             progress(Progress(stage: .transcription, message: "Resampling + transcribing"))
-            let asrInput = try resampled(session.systemAudioFile, in: dir, sessionID: sessionID)
+            let asrInput = try resampled(primaryAudioFile(session), in: dir, sessionID: sessionID)
             let asrEngine = asr
             let opts = ASROptions(wordTimestamps: true)
-            transcript = try await host.withModel(key: asr.modelID, load: { asrEngine }) { engine in
+            transcript = try await host.withModel(
+                key: asr.modelID,
+                load: { try await asrEngine.load(); return asrEngine },
+                unload: { await $0.unload() }
+            ) { engine in
                 try await engine.transcribe(audioURL: asrInput, options: opts)
             }
             try writeJSON(transcript, to: dir.appendingPathComponent("transcript.json"))
@@ -104,9 +123,13 @@ public struct BatchPipeline: Sendable {
         let ownerIntervals: [WordAligner.Interval]
         if shouldRun(.diarization, from: fromStage) {
             progress(Progress(stage: .diarization, message: "Diarizing speakers"))
-            let diarInput = try resampled(session.systemAudioFile, in: dir, sessionID: sessionID)
+            let diarInput = try resampled(primaryAudioFile(session), in: dir, sessionID: sessionID)
             let diarEngine = diarizer
-            diarization = try await host.withModel(key: diarizer.modelID, load: { diarEngine }) { engine in
+            diarization = try await host.withModel(
+                key: diarizer.modelID,
+                load: { try await diarEngine.load(); return diarEngine },
+                unload: { await $0.unload() }
+            ) { engine in
                 try await engine.diarize(audioURL: diarInput)
             }
             try writeJSON(diarization, to: dir.appendingPathComponent("diarization.json"))
@@ -205,7 +228,11 @@ public struct BatchPipeline: Sendable {
         let params = config.llmParameters
         let lang = config.outputLanguage
 
-        let raw: String = try await host.withModel(key: llm.modelID, load: { engine }) { llm in
+        let raw: String = try await host.withModel(
+            key: llm.modelID,
+            load: { try await engine.load(); return engine },
+            unload: { await $0.unload() }
+        ) { llm in
             if chunks.count <= 1 {
                 let body = chunks.first.map(TranscriptChunker.render) ?? ""
                 let messages = SummaryPrompt.map(transcriptBody: body, roster: roster, language: lang, detectedLanguage: detected)
@@ -244,6 +271,9 @@ public struct BatchPipeline: Sendable {
     /// heuristic stub — research Q4/Q5; the production VAD lives in the diarizer target).
     /// Returns [] when the mic file is absent or silent.
     private func ownerVAD(session: Session, in dir: URL, sessionID: String) -> [WordAligner.Interval] {
+        // Only meaningful when the mic is a separate owner-only channel. In `.mic` mode the
+        // mic IS the primary source (everyone in the room), so it can't anchor the owner.
+        guard config.audioSource == .system else { return [] }
         let micURL = dir.appendingPathComponent(session.micAudioFile)
         guard FileManager.default.fileExists(atPath: micURL.path) else { return [] }
         guard let file = try? AVAudioFile(forReading: micURL) else { return [] }
@@ -312,6 +342,14 @@ public struct BatchPipeline: Sendable {
     }
 
     // MARK: - Audio prep
+
+    /// Relative filename of the channel that feeds ASR + diarization (config-driven).
+    private func primaryAudioFile(_ session: Session) -> String {
+        switch config.audioSource {
+        case .system: return session.systemAudioFile
+        case .mic: return session.micAudioFile
+        }
+    }
 
     /// Produce (or reuse) the 16 kHz mono input for a session WAV. Resamples once into the
     /// session dir as `<name>-16k.wav` so re-runs reuse it.

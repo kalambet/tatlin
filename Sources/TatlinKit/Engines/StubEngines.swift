@@ -15,6 +15,9 @@ public struct StubASREngine: ASREngine {
 
     public init(language: String = "en") { self.language = language }
 
+    public func load() async throws {}
+    public func unload() async {}
+
     public func transcribe(audioURL: URL, options: ASROptions) async throws -> Transcript {
         func word(_ t: String, _ s: TimeInterval, _ e: TimeInterval) -> Word {
             Word(text: t, start: s, end: e, confidence: 0.95)
@@ -44,6 +47,9 @@ public struct StubDiarizer: DiarizerEngine {
     public let modelID = "stub-diarizer"
     public init() {}
 
+    public func load() async throws {}
+    public func unload() async {}
+
     public func diarize(audioURL: URL) async throws -> Diarization {
         let turns = [
             SpeakerTurn(speaker: "Speaker 1", start: 0.0, end: 4.0),
@@ -65,6 +71,9 @@ public struct StubDiarizer: DiarizerEngine {
 public struct StubLLMEngine: LLMEngine {
     public let modelID = "stub-llm"
     public init() {}
+
+    public func load() async throws {}
+    public func unload() async {}
 
     public func complete(messages: [LLMMessage], parameters: LLMParameters) async throws -> String {
         """

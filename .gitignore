@@ -27,3 +27,6 @@ xcuserdata/
 # Dev-only tooling artifacts
 tools/eval-golden/.venv/
 tools/eval-golden/__pycache__/
+
+# Coverage artifacts
+*.profraw

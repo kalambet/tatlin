@@ -53,4 +53,8 @@ public protocol DiarizerEngine: Sendable {
     var modelID: String { get }
     /// Diarize a 16 kHz mono audio file into speaker turns (+ embeddings when supported).
     func diarize(audioURL: URL) async throws -> Diarization
+    /// Load model weights into memory before diarization. Idempotent.
+    func load() async throws
+    /// Release model weights and reclaim memory.
+    func unload() async
 }

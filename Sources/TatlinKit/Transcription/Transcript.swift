@@ -68,4 +68,8 @@ public protocol ASREngine: Sendable {
     var modelID: String { get }
     /// Transcribe a 16 kHz mono audio file to words+timestamps.
     func transcribe(audioURL: URL, options: ASROptions) async throws -> Transcript
+    /// Load model weights into memory before transcription. Idempotent.
+    func load() async throws
+    /// Release model weights and reclaim memory.
+    func unload() async
 }
