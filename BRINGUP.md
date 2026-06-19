@@ -62,6 +62,19 @@ getting a real meeting → real notes. Do the steps in order; each is independen
 
 ---
 
+## Where data lives (CLI vs. app — ADR-9a/ADR-10)
+
+The CLI and the menubar app share the same `SessionStore` / `ModelStore` code but
+write to **different physical roots** because the app is sandboxed:
+
+- **CLI** → `~/Library/Application Support/dev.kalambet.tatlin/` (user domain).
+- **App** → `~/Library/Containers/dev.kalambet.apps.Tatlin/Data/Library/Application Support/dev.kalambet.tatlin/` (sandbox container).
+
+`FileManager.applicationSupportDirectory` resolves both automatically — no code
+branches. Consequence: **model weights download once per store**. The CLI is the
+dev/eval surface (`--from-stage`, `tatlin eval …`); the app is what users use.
+Use `tatlin clean` to wipe the CLI store between dev runs.
+
 ## Stage 0 — Sanity check the green core (5 min)
 
 ```bash

@@ -112,10 +112,20 @@ final class AppModel {
         let modelStore = ModelStore(sessionStoreRoot: store.root)
         let trio = MLEngineFactory.make(store: modelStore, asrBackend: .parakeet)
 
+        // Sandboxed write to a user-picked vault is only allowed while the security
+        // scope is held. Start on entry, stop on exit; nil-fallback means we'll write
+        // into the session folder instead.
+        let vaultURL: URL? = {
+            guard let url = settings.vaultDirectory,
+                  url.startAccessingSecurityScopedResource() else { return nil }
+            return url
+        }()
+        defer { vaultURL?.stopAccessingSecurityScopedResource() }
+
         let config = BatchPipeline.Config(
             outputLanguage: settings.outputLanguage,
             ownerName: settings.ownerName,
-            vaultDirectory: settings.vaultDirectory,
+            vaultDirectory: vaultURL,
             audioSource: settings.audioSource
         )
         let pipeline = BatchPipeline(
@@ -176,7 +186,6 @@ struct AppSettings {
 
     static func current() -> AppSettings {
         let defaults = UserDefaults.standard
-        let path = defaults.string(forKey: "vaultPath") ?? ""
         let source = BatchPipeline.AudioSource(rawValue: defaults.string(forKey: "audioSource") ?? "system") ?? .system
 
         let language: SummaryPrompt.OutputLanguage
@@ -188,8 +197,11 @@ struct AppSettings {
         }
 
         let owner = defaults.string(forKey: "ownerName") ?? "You"
+        // Sandboxed (ADR-9a): the only writable vault URL is the one resolved from the
+        // stored security-scoped bookmark. A plain path string from @AppStorage is
+        // display-only and can't be written to.
         return AppSettings(
-            vaultDirectory: path.isEmpty ? nil : URL(fileURLWithPath: path, isDirectory: true),
+            vaultDirectory: VaultBookmark.resolve(),
             audioSource: source,
             outputLanguage: language,
             ownerName: owner.isEmpty ? "You" : owner
