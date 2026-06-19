@@ -21,6 +21,7 @@ let package = Package(
     ],
     products: [
         .library(name: "TatlinKit", targets: ["TatlinKit"]),
+        .library(name: "TatlinML", targets: ["TatlinML"]),
         .executable(name: "tatlin", targets: ["tatlin"]),
     ],
     dependencies: [
