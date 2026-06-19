@@ -24,7 +24,7 @@ Local-first, on-device, **batch** (non-real-time) macOS meeting note-taker. Swif
 
 ### Cross-cutting decisions to ratify in this plan
 - **ADR-9 — Distribution: Developer-ID-signed + notarized `.app`, shipped via GitHub Releases (later a Homebrew cask), NOT Mac App Store.** ✅ confirmed. **Sandbox OFF** — simplifies SCStream, EventKit, and the Application Support model store; acceptable for a self-distributed personal tool. Rationale: ~15–25 GB model downloads break the App Store size/ODR model; screen-recording + system-audio is review friction. Build a notarized `.app` in a `.dmg`/zip for the Releases page; add a `Casks/tatlin.rb` Homebrew cask once releases stabilize.
-- **ADR-10 — Two front doors over one core library.** A SwiftPM package (`TatlinKit`) holds all pipeline logic; a **CLI harness** (`tatlin-cli`) and the **menubar app** (`Tatlin`) are thin shells over it. The CLI lets Phase 2 run end-to-end against saved audio long before the app/UX exists (brief §10 Phase 2).
+- **ADR-10 — Two front doors over one core library.** A SwiftPM package (`TatlinKit` + `TatlinML` libraries) holds all pipeline logic; a **CLI harness** (`tatlin`, SwiftPM executable at `Sources/tatlin/`) and the **menubar app** (`Tatlin`, a hand-managed Xcode project at `Tatlin.xcodeproj/` with sources in `Tatlin/`) are thin shells over it. The app is an Xcode-managed `.app` bundle rather than a SwiftPM executable because it needs `LSUIElement`, entitlements, and Developer-ID signing/notarization (ADR-9) — things SwiftPM doesn't model. The CLI lets Phase 2 run end-to-end against saved audio long before the app/UX exists (brief §10 Phase 2).
 - **ADR-11 — Model lifecycle is an actor.** A single `ModelHost` actor owns download/verify/compile/load/unload and enforces **strict sequential residency** (only one heavy model resident at a time). Prevents the 64 GB ceiling breach (research risk #6).
 - **ADR-12 — Swift 6 structured concurrency**, `async/await` + actors for orchestration; no Combine for pipeline flow. `@Observable` for app view-models.
 - **ADR-13 — Calendar metadata, read-only, no automation.** On **capture start**, query `EventKit` for events overlapping *now*; capture title, attendees, notes, start/end into `session.json`. **No auto start/stop, no segmentation, no event↔recording matching heuristics** — the user clicks Start, we snapshot whatever meeting is on the calendar at that instant. Attendee roster becomes a prior for speaker ID (ADR-5). Calendar-*driven automation* stays out of scope entirely. *(Spoken-language is NOT derived from calendar — see Part F.)*
@@ -59,29 +59,39 @@ Each stage reads the prior artifact from the session dir and writes its own → 
 
 ### Package / target layout
 ```
-Tatlin/                                  (SwiftPM workspace, no git yet → git init in Phase 1)
-  Package.swift
+tatlin/                                  (git repo root + SwiftPM package root)
+  Package.swift                          SwiftPM manifest (TatlinKit, TatlinML, tatlin CLI)
+  Tatlin.xcodeproj/                      Xcode project — hosts the menubar app target only
+  Tatlin/                                app sources + bundle resources (loaded by Xcode project)
+    TatlinApp.swift                      @main entry — MenuBarExtra + Settings scenes
+    AppModel.swift                       capture + pipeline driver (@Observable, @MainActor)
+    MenuContentView.swift                menubar panel view
+    SettingsView.swift                   Settings window (vault path / language / owner / source)
+    Info.plist                           LSUIElement=YES + NSMicrophone/Calendars/Camera usage strings
+    Tatlin.entitlements                  sandbox OFF (ADR-9), audio-input ON, hardened-runtime ON
+    Assets.xcassets/                     app icon + accent color
   Sources/
-    TatlinKit/                           library — all pipeline logic, platform-agnostic where possible
+    TatlinKit/                           library — pipeline logic, platform-only deps (Apple frameworks)
       Session/        SessionStore, artifact codables, resume logic
       Calendar/       CalendarService (EventKit, read-only), current-event snapshot, roster
-      Capture/        SCStreamRecorder, AudioWriter, dual-channel WAV
+      Capture/        SCStreamRecorder, AudioFileWriter, dual-channel WAV
       Audio/          AVAudioConverter resampling (48k→16k mono)
-      Transcription/  ASREngine protocol, ParakeetEngine, (VoxtralEngine, WhisperKitEngine)
-      Diarization/    DiarizerEngine wrapper over FluidAudio, OwnerVAD
+      Transcription/  ASREngine protocol + Transcript model
+      Diarization/    DiarizerEngine protocol + Diarization model
       Alignment/      word×turn assignment, interval tree, overlap flagging
       SpeakerID/      anchor resolver, embedding enrollment store
-      Summarization/  LLMEngine over MLXLLM, prompt templates, MD validator/repair
+      Summarization/  LLMEngine protocol, prompt templates, NotesParser, MeetingNotes
       Output/         MarkdownComposer, front-matter, vault writer
       Models/         ModelHost actor, ModelManifest, downloader, SHA-256, CoreML compile
       Pipeline/       BatchPipeline orchestrator (stages 2–7), Progress events
-    Tatlin/                              app — SwiftUI MenuBarExtra shell
-      App, MenuBarScene, Onboarding/Permissions, SettingsView, SpeakerNamingView
-    tatlin-cli/                          executable — record / run-pipeline / eval subcommands
+      Engines/        StubEngines (CLI/test fast path)
+      Eval/           WER / DER / EvalReport
+    TatlinML/                            library — concrete ML engines (ParakeetEngine, VoxtralEngine,
+                                         WhisperKitEngine, FluidDiarizer, QwenSummarizer) +
+                                         MLEngineFactory. Pulls the MLX/Metal transitive graph.
+    tatlin/                              executable — `tatlin` CLI (record / run / models / eval / …)
   Tests/
-    TatlinKitTests/
-    TatlinEval/                          ASR WER bake-off + diarization DER harness
-  Models/                               (gitignored) local model cache for dev; manifest checked in
+    TatlinKitTests/                      Swift Testing — units for the above
 ```
 
 ### Key dependencies (pin exact versions in Phase 1)
@@ -114,7 +124,7 @@ actor ModelHost {               // ADR-11: one heavy model resident at a time
 ### Phase 1 — Capture spike  *(riskiest macOS unknown)*
 **Status (2026-06-18): code-complete & building; on-device run pending.** SwiftPM workspace, `SessionStore`, `AudioResampler`, `AudioFileWriter`, `SCStreamRecorder` (actor + watchdog), `CalendarService` (+pure filter logic), and `record`/`calendar` CLI subcommands landed; 33 unit tests green. **Remaining:** exercise live capture + TCC grants on the M5 (M1.4 acceptance) — cannot run in CI.
 **Goal:** headless dual-channel recorder writing clean session files; permissions verified end-to-end.
-- M1.1 `git init`; SwiftPM scaffold; `tatlin-cli record` subcommand.
+- M1.1 `git init`; SwiftPM scaffold; `tatlin record` subcommand.
 - M1.2 `SCStreamRecorder`: `capturesAudio + captureMicrophone`, separate `.audio`/`.microphone` outputs → two `AudioWriter`s (independent timestamp baselines) → `raw-system.wav` + `raw-mic.wav` (48 kHz/32-bit float mono).
 - M1.3 `SessionStore`: create `~/…/Tatlin/sessions/<ISO8601>/` + `session.json` on record-start; flush-on-write.
 - M1.4 Permission flow probe: mic (`AVCaptureDevice`) + screen/system-audio (`SCShareableContent`); handle relaunch-after-grant.
@@ -142,8 +152,8 @@ actor ModelHost {               // ADR-11: one heavy model resident at a time
 - M2.5 Stage 5 `SpeakerID`: **roster prime from the calendar attendee list (ADR-13)** → owner anchor (mic cluster) → enrolled-embedding match (persistent speaker DB) → unknowns stay `Speaker N`. The roster is passed to Stage 6 so LLM relabel *matches against known attendees* instead of free-guessing.
 - M2.6 Stage 6 `Summarization`: prompt templates (system skeleton + RU/DE/EN one-shot exemplar), `<think>`-strip is N/A (instruct), MD validator + one repair pass, `speaker_name_map` with evidence/confidence; single-pass ≤~28k else map-reduce on turn boundaries; prompt-injection delimiting; **output language per Settings** (default *Match meeting* → detect dominant transcript language and pin the notes to it; else honor the override).
 - M2.7 Stage 7 `Output`: `MarkdownComposer` (YAML front-matter — incl. calendar title/attendees/event time when present — + TL;DR/decisions/actions/open-questions/per-speaker + full diarized transcript) → vault path; filename from event title (sanitized) else timestamped default.
-- M2.8 `BatchPipeline` orchestrator + `tatlin-cli run <session>` with `--from-stage` resume; structured progress events.
-- **Acceptance:** `tatlin-cli run` on a real 1–2 h recording yields correct, well-formed Obsidian notes; each stage independently re-runnable; peak memory under budget; golden-set eval (research Q6 eval debt) scored.
+- M2.8 `BatchPipeline` orchestrator + `tatlin run <session>` with `--from-stage` resume; structured progress events.
+- **Acceptance:** `tatlin run` on a real 1–2 h recording yields correct, well-formed Obsidian notes; each stage independently re-runnable; peak memory under budget; golden-set eval (research Q6 eval debt) scored.
 
 ### Phase 3 — App glue + UX
 **Goal:** the unobtrusive menubar product.
@@ -167,7 +177,7 @@ Calendar-triggered / VAD auto-segmentation; richer speaker enrollment UI; output
 - **Unit:** Swift Testing for SessionStore, resampler, alignment math (interval tree, overlap), Markdown validator, manifest/checksum.
 - **Eval harness (`TatlinEval`):** ASR WER + diarization DER + summary golden-set; re-runnable, results checked into `eval/`. This is the real quality signal (research risks #3, Q6 eval debt).
 - **Golden-summary generation (dev-only, Part F #5):** `tools/eval-golden/` — a throwaway Python/Ollama (or API) script that produces reference summaries for hand-curated transcripts, scored against Qwen3's output (section completeness, action-item/owner recall, decision recall, hallucination, language fidelity). **Never bundled or shipped** (C1: dev spike only); lives outside the SwiftPM build.
-- **Integration:** `tatlin-cli run` against a committed fixture session (short, license-clean audio).
+- **Integration:** `tatlin run` against a committed fixture session (short, license-clean audio).
 - **Manual:** the Phase-3 acceptance scenarios on a fresh macOS account.
 
 ## Part E — Risks → mitigations (carried from research)
