@@ -30,7 +30,7 @@ struct MenuContentView: View {
 
             if let url = model.lastOutput {
                 Button {
-                    NSWorkspace.shared.open(url)
+                    openInObsidian(url)
                 } label: {
                     Label("Open last notes", systemImage: "doc.text")
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -92,6 +92,23 @@ struct MenuContentView: View {
         let f = RelativeDateTimeFormatter()
         f.unitsStyle = .abbreviated
         return f.localizedString(for: date, relativeTo: Date())
+    }
+
+    /// Open a note in Obsidian via its URL scheme; fall back to the default app handler if
+    /// Obsidian isn't installed/registered. `obsidian://open?path=<abs>` lets Obsidian
+    /// resolve the containing vault on its own — no vault-name configuration needed.
+    private func openInObsidian(_ url: URL) {
+        var components = URLComponents()
+        components.scheme = "obsidian"
+        components.host = "open"
+        components.queryItems = [URLQueryItem(name: "path", value: url.path)]
+
+        if let deepLink = components.url,
+           NSWorkspace.shared.urlForApplication(toOpen: deepLink) != nil {
+            NSWorkspace.shared.open(deepLink)
+        } else {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     @ViewBuilder private var missingModelsNotice: some View {

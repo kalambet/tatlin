@@ -131,6 +131,7 @@ final class AppModel {
 
     private func runPipeline(_ id: String) async throws {
         let settings = AppSettings.current()
+        print("[Tatlin] runPipeline id=\(id) audioSource=\(settings.audioSource.rawValue) vault=\(settings.vaultDirectory?.path ?? "(default)")")
         let modelStore = ModelStore(sessionStoreRoot: store.root)
         let trio = MLEngineFactory.make(store: modelStore, asrBackend: .parakeet)
 
