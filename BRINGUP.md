@@ -4,10 +4,12 @@ Everything built so far (`scaffold` → Phase 2) compiles and is unit-tested in 
 engines**. This guide is the ordered checklist for taking it onto the **M5 Pro (macOS 26)** and
 getting a real meeting → real notes. Do the steps in order; each is independently testable.
 
-> Quick status (updated 2026-06-18): `TatlinML` is **enabled and compiling** against the real
-> MLX/FluidAudio APIs — all the original `// VERIFY` gaps are closed (Stage 2 done). `tatlin run`
-> uses the real engines by default. What remains is on hardware: **download weights** (Stage 3),
-> **run on real audio** (Stage 4), and **the eval pass** (Stage 5) — plus Stage 1 live capture.
+> Quick status (updated 2026-06-19): `TatlinML` is **enabled and compiling** against the real
+> MLX/FluidAudio APIs — all the original `// VERIFY` gaps are closed (Stage 2 done). Stages 3–4 are
+> **done**: weights downloaded (Parakeet, Qwen3, community-1) and the **full real-engine pipeline
+> ran end-to-end on a live in-person capture** (2026-06-19 — see the ✅ callout below). What remains:
+> the **eval pass** (Stage 5, quality unproven), a **remote-meeting test** of the system-audio
+> capture path (recorded silence in-person), and **multi-speaker** validation.
 >
 > ⚠️ **Build with `swift build --product tatlin`**, not bare `swift build`: FluidAudio's *own*
 > `FluidAudioCLI` benchmark target hits a compiler type-check-timeout (a bug in their code, in a
@@ -37,6 +39,26 @@ getting a real meeting → real notes. Do the steps in order; each is independen
 > sessions, eval, downloads). Phase 3 makes this seamless by shipping a real Xcode `.app` (ADR-9).
 > Refs: [ml-explore/mlx#2061](https://github.com/ml-explore/mlx/pull/2061),
 > [swama#30](https://github.com/Trans-N-ai/swama/issues/30), [jan#8046](https://github.com/janhq/jan/issues/8046).
+>
+> ✅ **Full real-engine pipeline verified end-to-end (2026-06-19).** A live capture ran
+> record → ASR (Parakeet) → diarization (FluidAudio) → alignment → speaker-ID → summarization
+> (Qwen3-30B 8-bit MLX) → notes `.md`, all on-device via the Xcode binary, with calendar
+> metadata in the frontmatter. Two bugs were fixed to get there:
+> 1. **`tatlin run` never loaded model weights** → every real run died with `modelNotLoaded`.
+>    `load()`/`unload()` are now part of the `ASREngine`/`DiarizerEngine`/`LLMEngine` protocols
+>    and driven through `ModelHost`.
+> 2. **In-person recordings need `--source mic`** (see the ⚠️ below).
+>
+> ⚠️ **System-audio can capture pure silence — use `--source mic` for in-person meetings.**
+> The pipeline transcribes + diarizes the **system** channel by default (remote participants);
+> the mic is only an owner anchor. In the 2026-06-19 in-person test, `raw-system.wav` was
+> digital silence (−91 dB) because nothing was routed through system output — **all speech was on
+> `raw-mic.wav`** (−16 dB peak). Default `run` then fails at diarization with *"No speech detected
+> in audio."* Fix: `tatlin run <id> --source mic` makes the mic the ASR + diarization source
+> (owner-mic VAD is auto-disabled in this mode, since the mic is no longer owner-exclusive —
+> owner identity then falls back to enrollment/roster/LLM). Default stays `--source system`.
+> **Still unverified:** the system-audio capture path itself — needs a real *remote* meeting where
+> audio actually plays through system output, to confirm `raw-system.wav` is non-silent.
 
 ---
 
@@ -72,6 +94,7 @@ CI. Do it before the ML work so capture is proven independently.
    open ~/Library/Application\ Support/dev.kalambet.tatlin/sessions/<id>/
    ```
    - Confirm `raw-system.wav` (the played audio) and `raw-mic.wav` (your voice) are **both valid and on separate files**, owner clearly isolated on the mic file.
+   - ⚠️ **Check `raw-system.wav` is not silent** (`ffmpeg -i raw-system.wav -af volumedetect -f null -`): if nothing played through system output it will be ~−91 dB and the default `run` will fail at diarization. For an **in-person** meeting that's expected — process it with `tatlin run <id> --source mic` (see the top-of-file ⚠️).
 5. While recording, start during a real calendar meeting and confirm `session.json` picks up the event title/attendees; with no meeting, confirm the `Tatlin YYYY-MM-DD HHmm` default.
 
 **Acceptance:** two clean, independently-playable WAVs; survives a mid-session kill (partial WAVs still play); AirPods-as-mic tested.
@@ -140,9 +163,10 @@ swift run tatlin models list                                          # all shou
 ## Stage 4 — First real pipeline run
 
 ```bash
-# Use a session captured in Stage 1 (or re-record):
+# Use a session captured in Stage 1 (or re-record). Real engines need the Xcode binary:
 swift run tatlin sessions
-swift run tatlin run <session-id> --vault ~/Obsidian/Meetings
+.xcode-build/Build/Products/Debug/tatlin run <session-id> --vault ~/Obsidian/Meetings
+#   add --source mic for an in-person meeting (system channel silent — see top-of-file ⚠️)
 open ~/Obsidian/Meetings/<title>.md
 ```
 Expect a real diarized, speaker-attributed transcript + structured notes. Re-run individual
@@ -193,5 +217,5 @@ Developer-ID notarization + GitHub Releases.
 | `tatlin record` | ✅ code-complete (needs grants; verify Stage 1) |
 | `tatlin models list` / `download <key>` | ✅ working (`verify` TODO) |
 | `tatlin eval wer --reference --hypothesis` | ✅ working |
-| `tatlin run <id> [--from-stage] [--vault] [--stub]` | ✅ `--stub` works under `swift run`; real engines need an Xcode build (metallib) |
+| `tatlin run <id> [--from-stage] [--vault] [--source system\|mic] [--stub]` | ✅ verified end-to-end with real engines (Xcode binary; 2026-06-19). `--stub` works under `swift run`. Use `--source mic` for in-person (system channel silent) |
 | `tatlin transcribe <audio> [--model-key]` | ✅ real Parakeet ASR verified (via Xcode-built binary) |
