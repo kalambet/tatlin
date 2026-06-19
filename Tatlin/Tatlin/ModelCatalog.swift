@@ -39,6 +39,16 @@ final class ModelCatalog {
 
     private(set) var rows: [Row] = []
 
+    /// True when the pipeline has at least one installed ASR engine and one installed
+    /// summarizer. Diarization is provisioned by FluidAudio at runtime (`.autoManaged`),
+    /// so it is intentionally not part of this gate.
+    var isReady: Bool {
+        let required: [ModelKind] = [.asr, .llm]
+        return required.allSatisfy { kind in
+            rows.contains { $0.spec.kind == kind && $0.state == .installed }
+        }
+    }
+
     private let store: ModelStore
     private let downloader: ModelDownloader
 

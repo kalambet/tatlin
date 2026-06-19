@@ -20,6 +20,7 @@ struct TatlinApp: App {
     var body: some Scene {
         MenuBarExtra {
             MenuContentView(model: model)
+                .environment(catalog)
         } label: {
             Image(systemName: model.menuBarSymbol)
         }

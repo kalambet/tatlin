@@ -4,12 +4,17 @@ import SwiftUI
 /// The panel shown from the menubar icon: status, start/stop, open-notes, settings, quit.
 struct MenuContentView: View {
     let model: AppModel
+    @Environment(ModelCatalog.self) private var catalog
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Tatlin").font(.headline)
 
             statusLine
+
+            if !catalog.isReady {
+                missingModelsNotice
+            }
 
             Divider()
 
@@ -18,7 +23,8 @@ struct MenuContentView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .contentShape(Rectangle())
             }
-            .disabled(model.isBusy)
+            .disabled(model.isBusy || !catalog.isReady)
+            .help(catalog.isReady ? "" : "Download required models from Settings → Models first.")
             .keyboardShortcut(.defaultAction)
 
             if let url = model.lastOutput {
@@ -49,6 +55,21 @@ struct MenuContentView: View {
         .buttonStyle(.plain)
         .padding(12)
         .frame(width: 300)
+    }
+
+    @ViewBuilder private var missingModelsNotice: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label("On-device models not installed", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+                .font(.caption)
+            SettingsLink {
+                Text("Open Settings → Models")
+                    .font(.caption)
+                    .underline()
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+        }
     }
 
     @ViewBuilder private var statusLine: some View {
