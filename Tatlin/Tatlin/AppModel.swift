@@ -22,6 +22,9 @@ final class AppModel {
 
     var status: Status = .idle
     var lastOutput: URL?
+    /// Sessions whose audio is captured but whose pipeline hasn't reached output. Re-runnable
+    /// via `resume(_:)`. Refreshed on init and whenever a pipeline cycle finishes.
+    var resumableSessions: [Session] = []
 
     var isRecording: Bool { if case .recording = status { return true }; return false }
     var isBusy: Bool { if case .processing = status { return true }; return false }
@@ -43,9 +46,27 @@ final class AppModel {
         // SessionStore only throws on a filesystem failure creating Application Support —
         // unrecoverable at launch, so fail fast.
         self.store = try! SessionStore()
+        refreshResumable()
         Task {
             _ = try? await UNUserNotificationCenter.current()
                 .requestAuthorization(options: [.alert, .sound])
+        }
+    }
+
+    func refreshResumable() {
+        resumableSessions = (try? store.resumable()) ?? []
+    }
+
+    func resume(_ sessionID: String) {
+        guard !isRecording, !isBusy else { return }
+        Task {
+            status = .processing("Resuming…")
+            do {
+                try await runPipeline(sessionID)
+            } catch {
+                status = .failed(error.localizedDescription)
+            }
+            refreshResumable()
         }
     }
 
@@ -102,6 +123,7 @@ final class AppModel {
             } catch {
                 status = .failed(error.localizedDescription)
             }
+            refreshResumable()
         }
     }
 

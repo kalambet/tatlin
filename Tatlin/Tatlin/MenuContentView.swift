@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import TatlinKit
 
 /// The panel shown from the menubar icon: status, start/stop, open-notes, settings, quit.
 struct MenuContentView: View {
@@ -37,6 +38,10 @@ struct MenuContentView: View {
                 }
             }
 
+            if !model.resumableSessions.isEmpty {
+                resumableSection
+            }
+
             Divider()
 
             SettingsLink {
@@ -55,6 +60,38 @@ struct MenuContentView: View {
         .buttonStyle(.plain)
         .padding(12)
         .frame(width: 300)
+    }
+
+    @ViewBuilder private var resumableSection: some View {
+        Divider()
+        Text("Resume")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        ForEach(model.resumableSessions.prefix(3), id: \.id) { session in
+            Button {
+                model.resume(session.id)
+            } label: {
+                Label {
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(session.title).lineLimit(1).truncationMode(.middle)
+                        Text(Self.relativeDate(session.createdAt))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .disabled(model.isBusy || model.isRecording || !catalog.isReady)
+        }
+    }
+
+    private static func relativeDate(_ date: Date) -> String {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .abbreviated
+        return f.localizedString(for: date, relativeTo: Date())
     }
 
     @ViewBuilder private var missingModelsNotice: some View {
