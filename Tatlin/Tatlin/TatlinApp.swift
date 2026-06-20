@@ -46,6 +46,13 @@ struct TatlinApp: App {
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+
+        Window("Welcome to Tatlin", id: "onboarding") {
+            OnboardingView()
+                .environment(catalog)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 }
 
@@ -55,6 +62,8 @@ private struct MenuBarLabel: View {
     let model: AppModel
     @Environment(\.openWindow) private var openWindow
 
+    @AppStorage("onboardingComplete") private var onboardingComplete = false
+
     var body: some View {
         Image(systemName: model.menuBarSymbol)
             .onChange(of: model.pendingPickerToken) { _, newToken in
@@ -62,6 +71,12 @@ private struct MenuBarLabel: View {
             }
             .onChange(of: model.speakerNamingToken) { _, newToken in
                 if newToken != nil { openWindow(id: "speaker-naming") }
+            }
+            .task {
+                // First-run: open the onboarding window. The MenuBarExtra label runs the
+                // task as soon as the menu bar icon is installed, which is effectively at
+                // app launch.
+                if !onboardingComplete { openWindow(id: "onboarding") }
             }
     }
 }

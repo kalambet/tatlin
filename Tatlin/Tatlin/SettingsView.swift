@@ -18,8 +18,10 @@ struct SettingsView: View {
     @AppStorage("outputLanguage") private var outputLanguage = "match"
     @AppStorage("ownerName") private var ownerName = "You"
     @AppStorage("calendarSkipList") private var calendarSkipListRaw = ""
+    @AppStorage("onboardingComplete") private var onboardingComplete = false
 
     @Environment(ModelCatalog.self) private var catalog
+    @Environment(\.openWindow) private var openWindow
     @State private var loginItem = LoginItem()
 
     var body: some View {
@@ -89,6 +91,14 @@ struct SettingsView: View {
                     set: { loginItem.setEnabled($0) }
                 ))
                 loginItemFooter
+                HStack {
+                    Text("First-run guide")
+                    Spacer()
+                    Button("Re-run…") {
+                        onboardingComplete = false
+                        openWindow(id: "onboarding")
+                    }
+                }
             } header: {
                 Text("Launch")
             }
