@@ -22,6 +22,12 @@ final class AppModel {
 
     var status: Status = .idle
     var lastOutput: URL?
+    /// ID of the most recently completed (or in-flight) session — drives the M3.5
+    /// speaker-naming entry point in the menubar popover.
+    var lastSessionID: String?
+    /// Token bumped each time the user opens the speaker-naming window so SwiftUI
+    /// `.onChange` fires even when called repeatedly.
+    var speakerNamingToken: UUID?
     /// Sessions whose audio is captured but whose pipeline hasn't reached output. Re-runnable
     /// via `resume(_:)`. Refreshed on init and whenever a pipeline cycle finishes.
     var resumableSessions: [Session] = []
@@ -220,10 +226,77 @@ final class AppModel {
             }
             status = .completed(url)
             lastOutput = url
+            lastSessionID = id
             notifyDone(url)
         } catch {
             status = .failed(error.localizedDescription)
         }
+    }
+
+    // MARK: - Speaker naming (M3.5)
+
+    /// Row shown by `SpeakerNamingView` — one diarizer label that has a representative
+    /// embedding the user could enroll under a real name.
+    struct SpeakerNamingCandidate: Identifiable, Sendable {
+        let label: String
+        let sampleText: String
+        let embedding: SpeakerEmbedding
+        var id: String { label }
+    }
+
+    /// Bump the token so the speaker-naming window opens.
+    func presentSpeakerNaming() {
+        guard lastSessionID != nil else { return }
+        speakerNamingToken = UUID()
+    }
+
+    /// Read `diarization.json` + `aligned.json` for `lastSessionID` and produce one
+    /// candidate per diarizer label that has an embedding, with a short sample of what
+    /// that voice said for visual disambiguation.
+    func loadNamingCandidates() throws -> [SpeakerNamingCandidate] {
+        guard let id = lastSessionID else { return [] }
+        let dir = store.directory(for: id)
+        let diarization = try Self.readJSON(Diarization.self, from: dir.appendingPathComponent("diarization.json"))
+        let aligned = (try? Self.readJSON(AlignedTranscript.self, from: dir.appendingPathComponent("aligned.json")))
+            ?? AlignedTranscript(words: [], segments: [])
+
+        // First text we see per speaker label, capped so the row stays readable.
+        var samples: [String: String] = [:]
+        for seg in aligned.segments {
+            guard samples[seg.speaker] == nil else { continue }
+            samples[seg.speaker] = String(seg.text.prefix(140))
+        }
+
+        return diarization.embeddings
+            .map { SpeakerNamingCandidate(label: $0.key, sampleText: samples[$0.key] ?? "", embedding: $0.value) }
+            .sorted { $0.label < $1.label }
+    }
+
+    /// Enroll a batch of label → real-name pairs into `EnrollmentStore`. Returns the number
+    /// of profiles actually saved.
+    @discardableResult
+    func enrollSpeakers(_ names: [String: String]) -> Int {
+        let store = EnrollmentStore(root: self.store.root)
+        var profiles = (try? store.load()) ?? [:]
+        var written = 0
+        // Need the diarization embeddings for the labels we're enrolling.
+        guard let id = lastSessionID else { return 0 }
+        let dir = self.store.directory(for: id)
+        guard let diarization = try? Self.readJSON(Diarization.self, from: dir.appendingPathComponent("diarization.json")) else {
+            return 0
+        }
+        for (label, name) in names {
+            guard let embedding = diarization.embeddings[label] else { continue }
+            profiles[name] = embedding
+            written += 1
+        }
+        try? store.save(profiles)
+        return written
+    }
+
+    private static func readJSON<T: Decodable>(_ type: T.Type, from url: URL) throws -> T {
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode(T.self, from: data)
     }
 
     // MARK: - Helpers

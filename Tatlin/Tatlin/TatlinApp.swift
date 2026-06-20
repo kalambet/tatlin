@@ -40,6 +40,12 @@ struct TatlinApp: App {
         }
         .windowResizability(.contentSize)
         .defaultPosition(.center)
+
+        Window("Name the speakers", id: "speaker-naming") {
+            SpeakerNamingView(model: model)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
     }
 }
 
@@ -53,6 +59,9 @@ private struct MenuBarLabel: View {
         Image(systemName: model.menuBarSymbol)
             .onChange(of: model.pendingPickerToken) { _, newToken in
                 if newToken != nil { openWindow(id: "event-picker") }
+            }
+            .onChange(of: model.speakerNamingToken) { _, newToken in
+                if newToken != nil { openWindow(id: "speaker-naming") }
             }
     }
 }

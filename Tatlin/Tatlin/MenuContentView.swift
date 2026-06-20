@@ -38,6 +38,16 @@ struct MenuContentView: View {
                 }
             }
 
+            if model.lastSessionID != nil {
+                Button {
+                    model.presentSpeakerNaming()
+                } label: {
+                    Label("Name speakers…", systemImage: "person.crop.circle.badge.questionmark")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+            }
+
             if !model.resumableSessions.isEmpty {
                 resumableSection
             }
