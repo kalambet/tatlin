@@ -214,7 +214,7 @@ struct AppSettings {
 
     static func current() -> AppSettings {
         let defaults = UserDefaults.standard
-        let source = BatchPipeline.AudioSource(rawValue: defaults.string(forKey: "audioSource") ?? "system") ?? .system
+        let source = BatchPipeline.AudioSource(rawValue: defaults.string(forKey: "audioSource") ?? "merged") ?? .merged
 
         let language: SummaryPrompt.OutputLanguage
         switch defaults.string(forKey: "outputLanguage") ?? "match" {

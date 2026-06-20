@@ -38,12 +38,16 @@ public struct BatchPipeline: Sendable {
 
     /// Which captured channel feeds ASR + diarization.
     public enum AudioSource: String, Sendable, CaseIterable {
-        /// System-audio channel (remote participants). Default — the owner is on the mic,
-        /// remote speakers on system, so the mic doubles as a high-precision owner anchor.
+        /// Remote meeting (M2.9): ASR both channels and merge on the timeline. Owner words
+        /// come from the mic transcript; non-owner words come from the system-channel
+        /// transcript aligned against the system-channel diarization. The new default.
+        case merged
+        /// System-audio channel only (advanced). Loses the owner's voice in remote meetings
+        /// because the local mic doesn't bleed into the system output.
         case system
-        /// Microphone channel — for in-person meetings where everyone is captured by the mic
-        /// and the system channel is silent. Owner-mic VAD is disabled in this mode (the mic
-        /// is no longer owner-exclusive); owner identity falls back to enrollment/roster/LLM.
+        /// Microphone channel only — in-person meetings where everyone is captured by the
+        /// mic and the system channel is silent. Owner-mic VAD is disabled in this mode (the
+        /// mic is no longer owner-exclusive); owner identity falls back to enrollment/LLM.
         case mic
     }
 
@@ -65,7 +69,7 @@ public struct BatchPipeline: Sendable {
             enrollmentThreshold: Double = 0.7,
             vaultDirectory: URL? = nil,
             llmParameters: LLMParameters = LLMParameters(),
-            audioSource: AudioSource = .system
+            audioSource: AudioSource = .merged
         ) {
             self.outputLanguage = outputLanguage
             self.ownerName = ownerName
@@ -99,31 +103,73 @@ public struct BatchPipeline: Sendable {
         let dir = store.directory(for: sessionID)
 
         // Stage 2 — Transcription.
-        let transcript: Transcript
+        // `.merged` (M2.9) produces two transcripts (transcript-system.json + transcript-mic.json)
+        // inside a single withModel block so the ASR weights load once. The single-channel
+        // modes keep the legacy transcript.json filename and call shape.
+        let systemTranscript: Transcript?
+        let micTranscript: Transcript?
+        let legacyTranscript: Transcript?
         if shouldRun(.transcription, from: fromStage) {
             progress(Progress(stage: .transcription, message: "Resampling + transcribing"))
-            let asrInput = try resampled(primaryAudioFile(session), in: dir, sessionID: sessionID)
             let asrEngine = asr
             let opts = ASROptions(wordTimestamps: true)
-            transcript = try await host.withModel(
-                key: asr.modelID,
-                load: { try await asrEngine.load(); return asrEngine },
-                unload: { await $0.unload() }
-            ) { engine in
-                try await engine.transcribe(audioURL: asrInput, options: opts)
+            switch config.audioSource {
+            case .merged:
+                let systemInput = try resampled(session.systemAudioFile, in: dir, sessionID: sessionID)
+                let micInput = try resampled(session.micAudioFile, in: dir, sessionID: sessionID)
+                let (sys, mic) = try await host.withModel(
+                    key: asr.modelID,
+                    load: { try await asrEngine.load(); return asrEngine },
+                    unload: { await $0.unload() }
+                ) { engine in
+                    let s = try await engine.transcribe(audioURL: systemInput, options: opts)
+                    let m = try await engine.transcribe(audioURL: micInput, options: opts)
+                    return (s, m)
+                }
+                try writeJSON(sys, to: dir.appendingPathComponent("transcript-system.json"))
+                try writeJSON(mic, to: dir.appendingPathComponent("transcript-mic.json"))
+                systemTranscript = sys
+                micTranscript = mic
+                legacyTranscript = nil
+            case .system, .mic:
+                let asrInput = try resampled(primaryAudioFile(session), in: dir, sessionID: sessionID)
+                let t = try await host.withModel(
+                    key: asr.modelID,
+                    load: { try await asrEngine.load(); return asrEngine },
+                    unload: { await $0.unload() }
+                ) { engine in
+                    try await engine.transcribe(audioURL: asrInput, options: opts)
+                }
+                try writeJSON(t, to: dir.appendingPathComponent("transcript.json"))
+                legacyTranscript = t
+                systemTranscript = nil
+                micTranscript = nil
             }
-            try writeJSON(transcript, to: dir.appendingPathComponent("transcript.json"))
             try store.markCompleted(.transcription, for: sessionID)
         } else {
-            transcript = try readJSON(Transcript.self, from: dir.appendingPathComponent("transcript.json"))
+            switch config.audioSource {
+            case .merged:
+                systemTranscript = try readJSON(Transcript.self, from: dir.appendingPathComponent("transcript-system.json"))
+                micTranscript = try readJSON(Transcript.self, from: dir.appendingPathComponent("transcript-mic.json"))
+                legacyTranscript = nil
+            case .system, .mic:
+                legacyTranscript = try readJSON(Transcript.self, from: dir.appendingPathComponent("transcript.json"))
+                systemTranscript = nil
+                micTranscript = nil
+            }
         }
 
         // Stage 3 — Diarization (+ 3b owner intervals on the mic channel).
+        // For `.merged`, diarization runs on the system channel (where the non-owner speakers
+        // live); the mic channel is owner-only and doesn't need diarization. ownerVAD still
+        // contributes a fallback owner-anchor signal even though the mic transcript is the
+        // primary owner source.
+        let diarInputFile: String = config.audioSource == .merged ? session.systemAudioFile : primaryAudioFile(session)
         let diarization: Diarization
         let ownerIntervals: [WordAligner.Interval]
         if shouldRun(.diarization, from: fromStage) {
             progress(Progress(stage: .diarization, message: "Diarizing speakers"))
-            let diarInput = try resampled(primaryAudioFile(session), in: dir, sessionID: sessionID)
+            let diarInput = try resampled(diarInputFile, in: dir, sessionID: sessionID)
             let diarEngine = diarizer
             diarization = try await host.withModel(
                 key: diarizer.modelID,
@@ -140,14 +186,26 @@ public struct BatchPipeline: Sendable {
             ownerIntervals = ownerVAD(session: session, in: dir, sessionID: sessionID)
         }
 
-        // Stage 4 — Alignment (word×turn max-overlap + owner precedence).
+        // Stage 4 — Alignment.
+        // `.merged` interleaves the two transcripts via WordAligner.alignDual; the
+        // single-channel modes go through the original align(transcript:, diarization:, …).
         let aligned: AlignedTranscript
         if shouldRun(.alignment, from: fromStage) {
             progress(Progress(stage: .alignment, message: "Aligning words to speakers"))
-            aligned = WordAligner.align(
-                transcript: transcript, diarization: diarization,
-                ownerIntervals: ownerIntervals, ownerLabel: config.ownerLabel
-            )
+            switch config.audioSource {
+            case .merged:
+                aligned = WordAligner.alignDual(
+                    micTranscript: micTranscript!,
+                    systemTranscript: systemTranscript!,
+                    systemDiarization: diarization,
+                    ownerLabel: config.ownerLabel
+                )
+            case .system, .mic:
+                aligned = WordAligner.align(
+                    transcript: legacyTranscript!, diarization: diarization,
+                    ownerIntervals: ownerIntervals, ownerLabel: config.ownerLabel
+                )
+            }
             try writeJSON(aligned, to: dir.appendingPathComponent("aligned.json"))
             try store.markCompleted(.alignment, for: sessionID)
         } else {
@@ -273,7 +331,10 @@ public struct BatchPipeline: Sendable {
     private func ownerVAD(session: Session, in dir: URL, sessionID: String) -> [WordAligner.Interval] {
         // Only meaningful when the mic is a separate owner-only channel. In `.mic` mode the
         // mic IS the primary source (everyone in the room), so it can't anchor the owner.
-        guard config.audioSource == .system else { return [] }
+        // `.merged` runs mic-channel ASR directly and doesn't need VAD intervals for the
+        // canonical owner attribution, but a fallback owner-anchor signal is still nice for
+        // SpeakerID when the mic transcript is empty.
+        guard config.audioSource == .system || config.audioSource == .merged else { return [] }
         let micURL = dir.appendingPathComponent(session.micAudioFile)
         guard FileManager.default.fileExists(atPath: micURL.path) else { return [] }
         guard let file = try? AVAudioFile(forReading: micURL) else { return [] }
@@ -343,11 +404,13 @@ public struct BatchPipeline: Sendable {
 
     // MARK: - Audio prep
 
-    /// Relative filename of the channel that feeds ASR + diarization (config-driven).
+    /// Relative filename of the channel that feeds ASR + diarization in single-channel modes.
+    /// For `.merged`, ASR runs on both channels and diarization runs on the system channel;
+    /// callers that still want a single name use this and treat the system channel as primary.
     private func primaryAudioFile(_ session: Session) -> String {
         switch config.audioSource {
-        case .system: return session.systemAudioFile
-        case .mic: return session.micAudioFile
+        case .system, .merged: return session.systemAudioFile
+        case .mic:             return session.micAudioFile
         }
     }
 

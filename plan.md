@@ -157,11 +157,15 @@ actor ModelHost {               // ADR-11: one heavy model resident at a time
 - M2.6 Stage 6 `Summarization`: prompt templates (system skeleton + RU/DE/EN one-shot exemplar), `<think>`-strip is N/A (instruct), MD validator + one repair pass, `speaker_name_map` with evidence/confidence; single-pass ≤~28k else map-reduce on turn boundaries; prompt-injection delimiting; **output language per Settings** (default *Match meeting* → detect dominant transcript language and pin the notes to it; else honor the override).
 - M2.7 Stage 7 `Output`: `MarkdownComposer` (YAML front-matter — incl. calendar title/attendees/event time when present — + TL;DR/decisions/actions/open-questions/per-speaker + full diarized transcript) → vault path; filename from event title (sanitized) else timestamped default.
 - M2.8 `BatchPipeline` orchestrator + `tatlin run <session>` with `--from-stage` resume; structured progress events.
-- M2.9 **Dual-channel ASR + timeline merge** *(known gap, deferred from M2.4).* Today the pipeline runs ASR + diarization on **one** channel (`--source system|mic`) and uses the other only as a VAD owner-anchor. That works for in-person (`mic` only) but loses the owner's voice in remote meetings (their mic doesn't bleed into system out). Close the gap by:
-  - Stage 2': resample + ASR the second channel → `transcript-<channel>.json`.
-  - Stage 4 extension: merge both transcripts onto a single timeline; owner words from the mic channel take precedence over the diarizer's assignment for those time windows (this is the "owner-mic merged by precedence" promise of ADR-4).
-  - Speaker-ID falls out naturally: mic words = owner; system words = whoever the diarizer says / LLM relabel.
-  - Settings picker semantics shift to: **Remote meeting (mic + system, merged)** *(default once landed)* / **In-person (mic only)** / **System only** *(advanced)*. Until M2.9 ships, the picker stays as today's binary `system|mic` and remote meetings have a documented "your voice isn't in the transcript" limitation.
+- M2.9 **Dual-channel ASR + timeline merge** *(code-complete 2026-06-20, pending real-Zoom acceptance).*
+  - `BatchPipeline.AudioSource.merged` is the **new default**. `.system` and `.mic` stay as advanced/legacy modes.
+  - Stage 2: when `.merged`, both channels are ASR'd inside a single `ModelHost.withModel` block (load once, transcribe twice, unload), producing `transcript-system.json` + `transcript-mic.json`. Single-channel modes keep writing `transcript.json` unchanged.
+  - Stage 3: diarization runs on the system channel only; `ownerVAD` still runs as a fallback owner-anchor signal.
+  - Stage 4: new `WordAligner.alignDual(micTranscript:, systemTranscript:, systemDiarization:, ownerLabel:)` tags every mic word as owner, runs system words through the existing single-channel `align(...)`, then interleaves by `word.start` and flags cross-channel overlap on both sides (caller talking over a remote participant). Mic-first stable tie-break on equal starts.
+  - Speaker-ID falls out naturally: mic words = owner; system words follow the diarizer + LLM relabel.
+  - Settings picker semantics shipped: **Remote meeting (mic + system, merged)** *(default)* / **In-person (mic only)** / **System only** *(advanced)*.
+  - 5 alignDual unit tests + 1 `.merged` end-to-end pipeline test (88 → 94 in TatlinKit). All green.
+  - **Acceptance still owed:** a real Zoom/Meet recording producing notes with both owner words and remote participants on one timeline, correctly speaker-attributed.
 - **Acceptance:** `tatlin run` on a real 1–2 h recording yields correct, well-formed Obsidian notes; each stage independently re-runnable; peak memory under budget; golden-set eval (research Q6 eval debt) scored. **M2.9 acceptance:** a remote-meeting capture (real Zoom/Meet call) produces a transcript with both the owner's and remote participants' words on a single merged timeline, correctly speaker-attributed.
 
 ### Phase 3 — App glue + UX

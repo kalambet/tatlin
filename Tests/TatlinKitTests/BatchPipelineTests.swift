@@ -54,8 +54,15 @@ struct BatchPipelineTests {
         return (store, id, root)
     }
 
-    private func pipeline(_ store: SessionStore) -> BatchPipeline {
-        BatchPipeline(store: store, asr: StubASREngine(), diarizer: StubDiarizer(), llm: StubLLMEngine())
+    /// These tests were written for the original single-channel pipeline (one transcript.json,
+    /// owner attribution via mic VAD). The default config switched to `.merged` (M2.9) in
+    /// 2026-06-20; pin the legacy tests to `.system` so they keep validating the path they
+    /// were written for. The new dual-channel surface gets its own test below.
+    private func pipeline(_ store: SessionStore, audioSource: BatchPipeline.AudioSource = .system) -> BatchPipeline {
+        BatchPipeline(
+            store: store, asr: StubASREngine(), diarizer: StubDiarizer(), llm: StubLLMEngine(),
+            config: .init(audioSource: audioSource)
+        )
     }
 
     // MARK: - Tests
@@ -86,6 +93,26 @@ struct BatchPipelineTests {
             #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent(artifact).path))
         }
         #expect(seen.snapshot().contains(.output))
+    }
+
+    @Test("merged (M2.9) writes both channel transcripts and produces parseable notes")
+    func mergedDualChannel() async throws {
+        let (store, id, root) = try makeSession()
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let outURL = try await pipeline(store, audioSource: .merged).run(sessionID: id)
+        let md = try String(contentsOf: outURL, encoding: .utf8)
+        #expect(md.contains("## TL;DR"))
+        #expect(md.contains("## Transcript"))
+
+        let dir = store.directory(for: id)
+        // Dual-channel layout: separate transcript files, no legacy transcript.json.
+        for artifact in ["transcript-system.json", "transcript-mic.json", "diarization.json", "aligned.json", "notes.md"] {
+            #expect(FileManager.default.fileExists(atPath: dir.appendingPathComponent(artifact).path),
+                    "expected \(artifact) to be written under \(dir.path)")
+        }
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("transcript.json").path),
+                "legacy transcript.json should not be written in .merged mode")
     }
 
     @Test("owner anchor relabels the mic-aligned cluster to the owner name")

@@ -14,7 +14,7 @@ Busy
 /// Persisted to `UserDefaults` via `@AppStorage`; read back by `AppSettings.current()`.
 struct SettingsView: View {
     @AppStorage("vaultPath") private var vaultPath = ""
-    @AppStorage("audioSource") private var audioSource = "system"
+    @AppStorage("audioSource") private var audioSource = "merged"
     @AppStorage("outputLanguage") private var outputLanguage = "match"
     @AppStorage("ownerName") private var ownerName = "You"
     @AppStorage("calendarSkipList") private var calendarSkipListRaw = ""
@@ -72,8 +72,9 @@ struct SettingsView: View {
 
             Section("Capture") {
                 Picker("Audio source", selection: $audioSource) {
-                    Text("System (remote participants)").tag("system")
-                    Text("Microphone (in-person)").tag("mic")
+                    Text("Remote meeting (mic + system, merged)").tag("merged")
+                    Text("In-person (mic only)").tag("mic")
+                    Text("System only (advanced)").tag("system")
                 }
                 .pickerStyle(.radioGroup)
                 TextField("Your name", text: $ownerName)

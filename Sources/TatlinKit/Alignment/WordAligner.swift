@@ -88,6 +88,96 @@ public enum WordAligner {
         return AlignedTranscript(language: transcript.language, words: attributed, segments: segments)
     }
 
+    // MARK: - Dual-channel merge (M2.9)
+
+    /// Merge two channel-specific ASR passes onto a single timeline.
+    ///
+    /// Used by `BatchPipeline` when `AudioSource == .merged`:
+    /// - `micTranscript` is owner-only (headphones assumed): every word is force-tagged with
+    ///   `ownerLabel`.
+    /// - `systemTranscript` is the non-owner channel: aligned word-by-word against
+    ///   `systemDiarization` via the single-channel `align(...)` (no owner-interval pass —
+    ///   the mic is now the authoritative owner channel, system-side owner-precedence would
+    ///   only re-stamp non-owner words to "Owner" by mistake).
+    ///
+    /// The two streams are then interleaved by `word.start`. Where mic and system words
+    /// share time (the owner talked over a remote participant or vice versa), both sides
+    /// get `overlap = true`. The resulting `AlignedTranscript.segments` are regrouped so
+    /// switching speakers between channels produces clean break points.
+    public static func alignDual(
+        micTranscript: Transcript,
+        systemTranscript: Transcript,
+        systemDiarization: Diarization,
+        ownerLabel: String = "Owner"
+    ) -> AlignedTranscript {
+        // Mic words → all owner. Cheap, no diarization needed.
+        let micAttributed: [AttributedWord] = micTranscript.words.map {
+            AttributedWord(word: $0, speaker: ownerLabel, overlap: false)
+        }
+
+        // System words through the standard single-channel aligner. No owner intervals on
+        // this side — mic is the canonical owner channel.
+        let systemAttributed = align(
+            transcript: systemTranscript,
+            diarization: systemDiarization,
+            ownerIntervals: [],
+            ownerLabel: ownerLabel
+        ).words
+
+        // Cross-channel overlap: any mic word whose interval intersects any system word
+        // (or vice versa) gets overlap-flagged on both sides.
+        let (mic2, system2) = tagCrossChannelOverlap(mic: micAttributed, system: systemAttributed)
+
+        // Stable merge by start time. When starts tie, mic first — keeps owner ordering
+        // deterministic if both channels yielded a word at exactly t=0 etc.
+        var merged = mic2 + system2
+        merged.sort { lhs, rhs in
+            if lhs.word.start != rhs.word.start { return lhs.word.start < rhs.word.start }
+            return lhs.speaker == ownerLabel && rhs.speaker != ownerLabel
+        }
+
+        let segments = regroup(merged)
+        let language = micTranscript.language ?? systemTranscript.language
+        return AlignedTranscript(language: language, words: merged, segments: segments)
+    }
+
+    /// Flag mic words and system words that occupy the same time as `overlap=true`.
+    /// `mic` is treated as the smaller/scanning side; `system` is sorted and searched.
+    static func tagCrossChannelOverlap(
+        mic: [AttributedWord],
+        system: [AttributedWord]
+    ) -> (mic: [AttributedWord], system: [AttributedWord]) {
+        guard !mic.isEmpty, !system.isEmpty else { return (mic, system) }
+
+        // Sort system by word.start to enable lower-bound search, but track original
+        // positions so we can flip overlap on the caller's order if it ever matters.
+        let sortedSystem = system.enumerated().sorted { $0.element.word.start < $1.element.word.start }
+        let starts = sortedSystem.map(\.element.word.start)
+
+        var newMic = mic
+        var systemOverlapOriginalIndices = Set<Int>()
+
+        for i in newMic.indices {
+            let m = newMic[i].word
+            // Walk back from the lower bound to include any system word that started
+            // earlier but is still ongoing when the mic word fires.
+            var j = lowerBound(starts, m.start)
+            while j > 0 && sortedSystem[j - 1].element.word.end >= m.start { j -= 1 }
+            while j < sortedSystem.count && sortedSystem[j].element.word.start <= m.end {
+                let sWord = sortedSystem[j].element.word
+                if overlap(m.start, m.end, sWord.start, sWord.end) > 0 {
+                    newMic[i].overlap = true
+                    systemOverlapOriginalIndices.insert(sortedSystem[j].offset)
+                }
+                j += 1
+            }
+        }
+
+        var newSystem = system
+        for idx in systemOverlapOriginalIndices { newSystem[idx].overlap = true }
+        return (newMic, newSystem)
+    }
+
     // MARK: - Owner intervals
 
     /// A half-open-ish time interval `[start, end]` (seconds), inclusive of touching edges.

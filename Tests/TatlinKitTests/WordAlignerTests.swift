@@ -77,3 +77,96 @@ struct WordAlignerTests {
         #expect(aligned.words.first?.speaker == "S2")
     }
 }
+
+@Suite("WordAligner.alignDual (M2.9)")
+struct WordAlignerDualTests {
+
+    private func word(_ t: String, _ s: TimeInterval, _ e: TimeInterval) -> Word {
+        Word(text: t, start: s, end: e)
+    }
+
+    private func transcript(_ words: [Word], language: String = "en") -> Transcript {
+        let seg = TranscriptSegment(
+            text: words.map(\.text).joined(separator: " "),
+            start: words.first?.start ?? 0, end: words.last?.end ?? 0, words: words
+        )
+        return Transcript(language: language, segments: [seg])
+    }
+
+    @Test("merged: mic words become Owner, system words follow diarization, ordered by time")
+    func interleaveByTime() {
+        let mic = transcript([word("hi", 0, 1), word("yes", 4, 5)])
+        let sys = transcript([word("hello", 2, 3), word("ok", 6, 7)])
+        let diar = Diarization(turns: [SpeakerTurn(speaker: "S1", start: 0, end: 10)])
+
+        let aligned = WordAligner.alignDual(
+            micTranscript: mic, systemTranscript: sys, systemDiarization: diar, ownerLabel: "Owner"
+        )
+
+        #expect(aligned.words.map(\.word.text) == ["hi", "hello", "yes", "ok"])
+        #expect(aligned.words.map(\.speaker) == ["Owner", "S1", "Owner", "S1"])
+        #expect(aligned.words.allSatisfy { !$0.overlap })
+        // Regrouped into alternating speaker segments.
+        #expect(aligned.segments.map(\.speaker) == ["Owner", "S1", "Owner", "S1"])
+    }
+
+    @Test("cross-channel overlap: owner over remote speaker → both flagged")
+    func crossChannelOverlap() {
+        // Owner talks across [1,3] while remote says something on [2,4]: overlap on both.
+        let mic = transcript([word("interrupt", 1, 3)])
+        let sys = transcript([word("hello", 0, 1), word("world", 2, 4)])
+        let diar = Diarization(turns: [SpeakerTurn(speaker: "S1", start: 0, end: 5)])
+
+        let aligned = WordAligner.alignDual(
+            micTranscript: mic, systemTranscript: sys, systemDiarization: diar, ownerLabel: "Owner"
+        )
+
+        // hello [0,1] doesn't touch mic [1,3] beyond a shared edge — overlap fn requires >0 inter.
+        let map = Dictionary(uniqueKeysWithValues: aligned.words.map { ($0.word.text, $0.overlap) })
+        #expect(map["hello"] == false)
+        #expect(map["world"] == true)
+        #expect(map["interrupt"] == true)
+    }
+
+    @Test("empty mic → result equals system-only alignment")
+    func emptyMic() {
+        let mic = transcript([])
+        let sys = transcript([word("alone", 0, 1)])
+        let diar = Diarization(turns: [SpeakerTurn(speaker: "S1", start: 0, end: 2)])
+
+        let aligned = WordAligner.alignDual(
+            micTranscript: mic, systemTranscript: sys, systemDiarization: diar, ownerLabel: "Owner"
+        )
+
+        #expect(aligned.words.map(\.word.text) == ["alone"])
+        #expect(aligned.words.map(\.speaker) == ["S1"])
+    }
+
+    @Test("empty system → result is mic words tagged Owner")
+    func emptySystem() {
+        let mic = transcript([word("solo", 0, 1)])
+        let sys = transcript([])
+        let diar = Diarization(turns: [])
+
+        let aligned = WordAligner.alignDual(
+            micTranscript: mic, systemTranscript: sys, systemDiarization: diar, ownerLabel: "Owner"
+        )
+
+        #expect(aligned.words.map(\.word.text) == ["solo"])
+        #expect(aligned.words.map(\.speaker) == ["Owner"])
+    }
+
+    @Test("stable order when mic and system tie on start time: mic wins")
+    func tieBreakMicFirst() {
+        let mic = transcript([word("a", 0, 0.5)])
+        let sys = transcript([word("b", 0, 0.5)])
+        let diar = Diarization(turns: [SpeakerTurn(speaker: "S1", start: 0, end: 1)])
+
+        let aligned = WordAligner.alignDual(
+            micTranscript: mic, systemTranscript: sys, systemDiarization: diar, ownerLabel: "Owner"
+        )
+
+        #expect(aligned.words.map(\.word.text) == ["a", "b"])
+        #expect(aligned.words.first?.speaker == "Owner")
+    }
+}
