@@ -20,6 +20,7 @@ struct SettingsView: View {
     @AppStorage("calendarSkipList") private var calendarSkipListRaw = ""
 
     @Environment(ModelCatalog.self) private var catalog
+    @State private var loginItem = LoginItem()
 
     var body: some View {
         TabView {
@@ -38,6 +39,8 @@ struct SettingsView: View {
                 window.makeKeyAndOrderFront(nil)
                 window.orderFrontRegardless()
             }
+            // User may have toggled login item state in System Settings since last view.
+            loginItem.refresh()
         }
     }
 
@@ -78,6 +81,16 @@ struct SettingsView: View {
                 }
                 .pickerStyle(.radioGroup)
                 TextField("Your name", text: $ownerName)
+            }
+
+            Section {
+                Toggle("Start at login", isOn: Binding(
+                    get: { loginItem.isEnabled },
+                    set: { loginItem.setEnabled($0) }
+                ))
+                loginItemFooter
+            } header: {
+                Text("Launch")
             }
 
             Section {
@@ -126,6 +139,31 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
+    }
+
+    @ViewBuilder private var loginItemFooter: some View {
+        switch loginItem.state {
+        case .disabled, .enabled:
+            EmptyView()
+        case .requiresApproval:
+            HStack(spacing: 6) {
+                Label("Approval required in System Settings", systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .font(.caption)
+                Spacer()
+                Button("Open Login Items…") { loginItem.openLoginItemsSettings() }
+                    .buttonStyle(.link)
+            }
+        case .unknown(let detail):
+            Text("Status: \(detail)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        if let error = loginItem.lastErrorMessage {
+            Text(error)
+                .font(.caption)
+                .foregroundStyle(.orange)
+        }
     }
 
     private func chooseVault() {
