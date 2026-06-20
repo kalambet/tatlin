@@ -22,7 +22,11 @@ struct TatlinApp: App {
             MenuContentView(model: model)
                 .environment(catalog)
         } label: {
-            Image(systemName: model.menuBarSymbol)
+            // The label itself is always mounted (the menu bar icon), so it's the right
+            // place to observe model state and trigger the openWindow side effect that
+            // brings up the event picker (M3.1b). The picker token bumps for every show
+            // request so identical candidate lists still fire `.onChange`.
+            MenuBarLabel(model: model)
         }
         .menuBarExtraStyle(.window)
 
@@ -30,5 +34,25 @@ struct TatlinApp: App {
             SettingsView()
                 .environment(catalog)
         }
+
+        Window("Pick a meeting", id: "event-picker") {
+            EventPickerView(model: model)
+        }
+        .windowResizability(.contentSize)
+        .defaultPosition(.center)
+    }
+}
+
+/// The menu bar icon view, hosting the `openWindow` env so it can act on `pendingPickerToken`
+/// flips without leaking SwiftUI environment into `AppModel`.
+private struct MenuBarLabel: View {
+    let model: AppModel
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Image(systemName: model.menuBarSymbol)
+            .onChange(of: model.pendingPickerToken) { _, newToken in
+                if newToken != nil { openWindow(id: "event-picker") }
+            }
     }
 }

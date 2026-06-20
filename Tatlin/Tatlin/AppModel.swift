@@ -25,6 +25,12 @@ final class AppModel {
     /// Sessions whose audio is captured but whose pipeline hasn't reached output. Re-runnable
     /// via `resume(_:)`. Refreshed on init and whenever a pipeline cycle finishes.
     var resumableSessions: [Session] = []
+    /// Candidate events to surface in the EventPickerView (M3.1b). Non-empty means a picker
+    /// should be shown for the currently capturing session. UUID token bumps on every show
+    /// so SwiftUI `.onChange` fires even when the list shape is repeated.
+    var pendingPickerCandidates: [EventSnapshot] = []
+    var pendingPickerToken: UUID? = nil
+    private var pendingPickerSessionID: String? = nil
 
     var isRecording: Bool { if case .recording = status { return true }; return false }
     var isBusy: Bool { if case .processing = status { return true }; return false }
@@ -55,6 +61,45 @@ final class AppModel {
 
     func refreshResumable() {
         resumableSessions = (try? store.resumable()) ?? []
+    }
+
+    // MARK: - Event picker (M3.1b)
+
+    /// Apply the chosen calendar event to the in-flight session: update title + event metadata
+    /// in session.json. Capture continues unaffected.
+    func selectPickedEvent(_ snapshot: EventSnapshot) {
+        guard let id = pendingPickerSessionID else { dismissPicker(); return }
+        do {
+            var session = try store.load(id: id)
+            session.title = snapshot.title
+            session.event = snapshot
+            try store.write(session)
+        } catch {
+            // Non-fatal: session.json was already written with the default name.
+            print("[Tatlin] picker: failed to update session metadata: \(error)")
+        }
+        dismissPicker()
+    }
+
+    /// Apply a user-typed custom name to the in-flight session.
+    func selectCustomTitle(_ title: String) {
+        guard let id = pendingPickerSessionID else { dismissPicker(); return }
+        do {
+            var session = try store.load(id: id)
+            session.title = title
+            session.event = nil
+            try store.write(session)
+        } catch {
+            print("[Tatlin] picker: failed to update session title: \(error)")
+        }
+        dismissPicker()
+    }
+
+    /// Close the picker, leaving the default timestamped title in place.
+    func dismissPicker() {
+        pendingPickerCandidates = []
+        pendingPickerToken = nil
+        pendingPickerSessionID = nil
     }
 
     func resume(_ sessionID: String) {
@@ -93,10 +138,11 @@ final class AppModel {
                 let settings = AppSettings.current()
                 var title = Session.defaultTitle(for: now)
                 var event: EventSnapshot?
+                var pickerCandidates: [EventSnapshot] = []
                 switch await CalendarService(skipList: settings.calendarSkipList).currentCandidates(at: now) {
                 case .none:                 break
                 case .single(let snap):     title = snap.title; event = snap
-                case .multiple(let snaps):  if let first = snaps.first { title = first.title; event = first }
+                case .multiple(let snaps):  pickerCandidates = snaps  // resolved via the picker (M3.1b)
                 }
 
                 let id = Session.makeID(for: now)
@@ -108,6 +154,14 @@ final class AppModel {
                 try await recorder.start(session: session, store: store)
                 self.recorder = recorder
                 status = .recording
+
+                // Stage the picker only after capture is live — keeps the recorder hot
+                // even while the user is mulling over which calendar event this is.
+                if !pickerCandidates.isEmpty {
+                    pendingPickerSessionID = id
+                    pendingPickerCandidates = pickerCandidates
+                    pendingPickerToken = UUID()
+                }
             } catch let error as CaptureError {
                 status = .failed(Self.message(for: error))
             } catch {
