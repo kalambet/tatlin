@@ -226,6 +226,25 @@ ladder + iOS dark/tinted variants are in `AppIcon.appiconset`; the menu bar uses
 template PDFs (`MenuBarTower` / `MenuBarTowerRecording`) driven by `AppModel.menuBarIcon`.
 Icon Composer `.icon` (macOS 26 Liquid Glass) is optional polish — see the folder README.
 
+**M3.8 signing + notarization + attributions (ADR-9).** Sandbox/hardened-runtime
+entitlements are already declared via build settings (ADR-9a: audio-input, network.client,
+calendars, user-selected-files r/w — Xcode synthesizes the `.entitlements` at build time).
+The **About** tab in Settings shows model licenses (from `ModelManifest.default`) + framework
+attributions. Releasing is driven by `scripts/release.sh` (config in `scripts/config.yaml`):
+
+```bash
+./scripts/release.sh --dry-run     # validates config + checks cert/notary creds, no build
+./scripts/release.sh               # archive → Developer-ID export → notarize → staple → DMG
+```
+
+Two one-time prerequisites the script can't create for you (it checks for both):
+1. **Developer ID Application** certificate — Xcode › Settings › Accounts › Manage
+   Certificates › + › *Developer ID Application*.
+2. **Notary credentials** — generate an app-specific password at appleid.apple.com, then:
+   `xcrun notarytool store-credentials tatlin-notary --team-id 6TAUQFD29R --apple-id <id> --password <app-specific-pw>`
+
+Attach the stapled `build/release/Tatlin.dmg` to a GitHub Release.
+
 ---
 
 ## Quick reference — current CLI

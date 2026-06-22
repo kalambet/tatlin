@@ -1,0 +1,25 @@
+# Tatlin release / notarization config (M3.8, ADR-9).
+# Direct distribution: Developer-ID-signed + notarized .app via GitHub Releases.
+# Every value can be overridden by the matching env var (see release.sh).
+
+app:
+  scheme: Tatlin
+  project: Tatlin/Tatlin.xcodeproj
+  bundle_id: dev.kalambet.apps.Tatlin
+  configuration: Release
+
+signing:
+  team_id: 6TAUQFD29R
+  # codesign identity for direct distribution. Must be a "Developer ID Application"
+  # cert in your login keychain (Xcode > Settings > Accounts > Manage Certificates).
+  identity: Developer ID Application
+
+notary:
+  # Keychain profile name created once via:
+  #   xcrun notarytool store-credentials tatlin-notary \
+  #     --apple-id <you@apple> --team-id 6TAUQFD29R --password <app-specific-pw>
+  keychain_profile: tatlin-notary
+
+output:
+  build_dir: build/release
+  make_dmg: true

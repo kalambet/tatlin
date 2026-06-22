@@ -30,6 +30,8 @@ struct SettingsView: View {
                 .tabItem { Label("General", systemImage: "gearshape") }
             modelsTab
                 .tabItem { Label("Models", systemImage: "shippingbox") }
+            AboutView()
+                .tabItem { Label("About", systemImage: "info.circle") }
         }
         .frame(width: 560, height: 420)
         .scenePadding()
