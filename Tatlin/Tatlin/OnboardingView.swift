@@ -24,12 +24,21 @@ struct OnboardingView: View {
         }
         .frame(width: 520, height: 460)
         .onAppear {
-            NSApp.activate(ignoringOtherApps: true)
-            if let window = NSApp.keyWindow ?? NSApp.windows.last(where: { $0.canBecomeKey }) {
-                window.makeKeyAndOrderFront(nil)
-                window.orderFrontRegardless()
-            }
+            focusWindow()
             controller.refreshAll()
+        }
+    }
+
+    /// Bring the onboarding window back to the front. Each permission prompt is presented
+    /// by another process and returns focus to whatever was behind us, so after a grant
+    /// the wizard would otherwise sink beneath the other desktop windows (most noticeably
+    /// after the Calendar prompt — it looked like the app had closed). `orderFrontRegardless`
+    /// raises the window above other apps even though we're an LSUIElement agent.
+    private func focusWindow() {
+        NSApp.activate(ignoringOtherApps: true)
+        if let window = NSApp.windows.first(where: { $0.title == "Welcome to Tatlin" }) {
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
         }
     }
 
@@ -90,7 +99,7 @@ struct OnboardingView: View {
             description: "Tatlin uses your microphone to capture your half of the meeting so summarization knows what you said.",
             status: controller.microphoneStatus,
             grantTitle: "Grant access",
-            grant: { Task { await controller.requestMicrophone() } },
+            grant: { Task { await controller.requestMicrophone(); focusWindow() } },
             openSettings: controller.openMicrophoneSettings
         )
     }
@@ -101,7 +110,7 @@ struct OnboardingView: View {
             description: "Required to capture the audio of remote participants on Zoom/Meet/Teams etc. Tatlin doesn't watch or record your screen — it only taps the system audio output.",
             status: controller.screenRecordingStatus,
             grantTitle: "Grant access",
-            grant: controller.requestScreenRecording,
+            grant: { controller.requestScreenRecording(); focusWindow() },
             openSettings: controller.openScreenRecordingSettings,
             footnote: "macOS often requires you to relaunch Tatlin after granting this permission before the new state is recognized."
         )
@@ -113,7 +122,7 @@ struct OnboardingView: View {
             description: "Lets Tatlin title each session from the meeting on your calendar and prefill attendees as known speakers. Read-only — nothing is written or modified.",
             status: controller.calendarStatus,
             grantTitle: "Grant access",
-            grant: { Task { await controller.requestCalendar() } },
+            grant: { Task { await controller.requestCalendar(); focusWindow() } },
             openSettings: controller.openCalendarSettings,
             footnote: "Skipping this is fine — sessions get a timestamped default name."
         )
