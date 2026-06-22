@@ -5,6 +5,14 @@ import TatlinKit
 import TatlinML
 import UserNotifications
 
+/// How the menu bar label should render the current state: a custom asset-catalog
+/// template image, or an SF Symbol. Lets `AppModel` stay the single source of truth
+/// without importing SwiftUI.
+enum MenuBarIcon: Equatable {
+    case asset(String)
+    case symbol(String)
+}
+
 /// Drives capture + the batch pipeline and exposes observable status to the menubar UI.
 /// `@MainActor` so SwiftUI can read its state directly; heavy ML work runs off-main inside
 /// the engine actors (`ParakeetEngine`, `FluidDiarizer`, `QwenSummarizer`) and `ModelHost`.
@@ -41,12 +49,14 @@ final class AppModel {
     var isRecording: Bool { if case .recording = status { return true }; return false }
     var isBusy: Bool { if case .processing = status { return true }; return false }
 
-    /// SF Symbol for the menubar icon, reflecting current state.
-    var menuBarSymbol: String {
+    /// Menu bar glyph for the current state (M3.7). Idle and recording use the custom
+    /// Tatlin Tower template images from the asset catalog (auto-tinted by macOS for
+    /// light/dark menu bars); processing keeps the SF Symbol hourglass.
+    var menuBarIcon: MenuBarIcon {
         switch status {
-        case .recording:  return "record.circle.fill"
-        case .processing: return "hourglass"
-        default:          return "waveform"
+        case .recording:  return .asset("MenuBarTowerRecording")
+        case .processing: return .symbol("hourglass")
+        default:          return .asset("MenuBarTower")
         }
     }
 

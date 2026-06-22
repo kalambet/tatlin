@@ -219,6 +219,13 @@ onboarding (incl. optional Calendar), event picker window, auto-trigger on captu
 speaker-naming UI, Settings (vault path / skip-list / output language), icons (Icon Composer),
 Developer-ID notarization + GitHub Releases.
 
+**M3.7 icons ✅ DONE (2026-06-22).** The app icon is the Tatlin Tower (leaning double-helix
+truss, constructivist red on cream), authored as parametric SVG in `Tatlin/Design/icon/`
+(`tower.py` is the generator — re-render at any size, no external design tool). Full macOS
+ladder + iOS dark/tinted variants are in `AppIcon.appiconset`; the menu bar uses monochrome
+template PDFs (`MenuBarTower` / `MenuBarTowerRecording`) driven by `AppModel.menuBarIcon`.
+Icon Composer `.icon` (macOS 26 Liquid Glass) is optional polish — see the folder README.
+
 ---
 
 ## Quick reference — current CLI

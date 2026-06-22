@@ -65,7 +65,7 @@ private struct MenuBarLabel: View {
     @AppStorage("onboardingComplete") private var onboardingComplete = false
 
     var body: some View {
-        Image(systemName: model.menuBarSymbol)
+        menuBarImage
             .onChange(of: model.pendingPickerToken) { _, newToken in
                 if newToken != nil { openWindow(id: "event-picker") }
             }
@@ -78,5 +78,17 @@ private struct MenuBarLabel: View {
                 // app launch.
                 if !onboardingComplete { openWindow(id: "onboarding") }
             }
+    }
+
+    /// Renders the state's glyph (M3.7): custom Tatlin Tower template image for
+    /// idle/recording, SF Symbol for processing. Template images are auto-tinted by
+    /// macOS to match the menu bar; the fixed height keeps the vector PDF menu-bar sized.
+    @ViewBuilder private var menuBarImage: some View {
+        switch model.menuBarIcon {
+        case .asset(let name):
+            Image(name).renderingMode(.template).resizable().scaledToFit().frame(height: 18)
+        case .symbol(let symbol):
+            Image(systemName: symbol)
+        }
     }
 }
