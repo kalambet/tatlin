@@ -20,15 +20,28 @@ enum MenuBarIcon: Equatable {
 @Observable
 final class AppModel {
 
-    enum Status: Equatable {
-        case idle
-        case recording
-        case processing(String)
-        case completed(URL)
-        case failed(String)
-    }
+    /// Capture state — deliberately independent of processing so a new recording can start
+    /// the instant the previous one stops (its pipeline runs in the background queue below).
+    enum Capture: Equatable { case idle, recording }
+    private(set) var capture: Capture = .idle
 
-    var status: Status = .idle
+    /// A session waiting for (or undergoing) the batch pipeline.
+    struct PipelineJob: Identifiable, Equatable, Sendable {
+        let id: String
+        let title: String
+    }
+    /// Background processing queue; `first` is the job currently running. Drains serially so
+    /// only one pipeline is resident at a time (ADR-11 model residency / 64 GB ceiling).
+    private(set) var processing: [PipelineJob] = []
+    /// Live progress message for the running job.
+    private(set) var processingMessage: String?
+    private var processingTask: Task<Void, Never>?
+
+    /// Terminal outcome of the most recent pipeline, for the menu's status line. Cleared when
+    /// a new recording starts.
+    enum LastResult: Equatable { case none, done, failed(String) }
+    private(set) var lastResult: LastResult = .none
+
     var lastOutput: URL?
     /// ID of the most recently completed (or in-flight) session — drives the M3.5
     /// speaker-naming entry point in the menubar popover.
@@ -46,18 +59,15 @@ final class AppModel {
     var pendingPickerToken: UUID? = nil
     private var pendingPickerSessionID: String? = nil
 
-    var isRecording: Bool { if case .recording = status { return true }; return false }
-    var isBusy: Bool { if case .processing = status { return true }; return false }
+    var isRecording: Bool { capture == .recording }
+    var isProcessing: Bool { !processing.isEmpty }
 
-    /// Menu bar glyph for the current state (M3.7). Idle and recording use the custom
-    /// Tatlin Tower template images from the asset catalog (auto-tinted by macOS for
-    /// light/dark menu bars); processing keeps the SF Symbol hourglass.
+    /// Menu bar glyph (M3.7): recording (red tower) takes priority; otherwise the hourglass
+    /// while a background pipeline runs; otherwise the idle tower.
     var menuBarIcon: MenuBarIcon {
-        switch status {
-        case .recording:  return .asset("MenuBarTowerRecording")
-        case .processing: return .symbol("hourglass")
-        default:          return .asset("MenuBarTower")
-        }
+        if capture == .recording { return .asset("MenuBarTowerRecording") }
+        if isProcessing { return .symbol("hourglass") }
+        return .asset("MenuBarTower")
     }
 
     private let store: SessionStore
@@ -121,26 +131,20 @@ final class AppModel {
         pendingPickerSessionID = nil
     }
 
+    /// Re-run the pipeline for a captured-but-unprocessed session by queueing it behind any
+    /// in-flight processing. Allowed while another session processes; not while recording.
     func resume(_ sessionID: String) {
-        guard !isRecording, !isBusy else { return }
-        Task {
-            status = .processing("Resuming…")
-            do {
-                try await runPipeline(sessionID)
-            } catch {
-                status = .failed(error.localizedDescription)
-            }
-            refreshResumable()
-        }
+        guard !isRecording else { return }
+        let title = (try? store.load(id: sessionID).title) ?? sessionID
+        enqueueProcessing(sessionID, title: title)
     }
 
     // MARK: - Intent
 
     func toggle() {
-        switch status {
-        case .idle, .completed, .failed: start()
-        case .recording:                 stop()
-        case .processing:                break   // ignore while busy
+        switch capture {
+        case .idle:      start()   // allowed even while a previous session is still processing
+        case .recording: stop()
         }
     }
 
@@ -174,14 +178,17 @@ final class AppModel {
                         guard let self, self.isRecording else { return }
                         self.allowSleep()
                         self.recorder = nil
-                        self.status = .failed(Self.message(for: error))
+                        self.currentID = nil
+                        self.capture = .idle
+                        self.lastResult = .failed(Self.message(for: error))
                         self.notifyCaptureFailed()
                         self.refreshResumable()
                     }
                 })
                 try await recorder.start(session: session, store: store)
                 self.recorder = recorder
-                status = .recording
+                capture = .recording
+                lastResult = .none
                 preventSleepWhileRecording()
 
                 // Stage the picker only after capture is live — keeps the recorder hot
@@ -192,9 +199,13 @@ final class AppModel {
                     pendingPickerToken = UUID()
                 }
             } catch let error as CaptureError {
-                status = .failed(Self.message(for: error))
+                capture = .idle
+                currentID = nil
+                lastResult = .failed(Self.message(for: error))
             } catch {
-                status = .failed(error.localizedDescription)
+                capture = .idle
+                currentID = nil
+                lastResult = .failed(error.localizedDescription)
             }
         }
     }
@@ -202,16 +213,52 @@ final class AppModel {
     private func stop() {
         Task {
             allowSleep()  // recording is ending — let the system idle-sleep normally again
+            let id = currentID
+            currentID = nil
             do {
                 try await recorder?.stop()
-                recorder = nil
-                status = .processing("Starting…")
-                if let id = currentID { try await runPipeline(id) }
             } catch {
-                status = .failed(error.localizedDescription)
+                print("[Tatlin] recorder.stop: \(error)")  // still hand off whatever we captured
             }
+            recorder = nil
+            capture = .idle                  // ready to record again immediately
+            if let id {
+                let title = (try? store.load(id: id).title) ?? id
+                enqueueProcessing(id, title: title)
+            }
+        }
+    }
+
+    // MARK: - Processing queue
+
+    /// Queue a session for the background pipeline and make sure the serial drainer is running.
+    private func enqueueProcessing(_ id: String, title: String) {
+        guard !processing.contains(where: { $0.id == id }) else { return }
+        processing.append(PipelineJob(id: id, title: title))
+        if processingTask == nil {
+            processingTask = Task { [weak self] in await self?.drainProcessingQueue() }
+        }
+    }
+
+    /// Run queued pipelines one at a time. Capture is unaffected — you can record while this
+    /// runs — but only one pipeline is ever resident, honoring the model-residency ceiling.
+    private func drainProcessingQueue() async {
+        while let job = processing.first {
+            processingMessage = "Starting…"
+            do {
+                let url = try await runPipeline(job.id)
+                lastResult = .done
+                lastOutput = url
+                lastSessionID = job.id
+                notifyDone(url)
+            } catch {
+                lastResult = .failed(error.localizedDescription)
+            }
+            processing.removeFirst()
+            processingMessage = nil
             refreshResumable()
         }
+        processingTask = nil
     }
 
     /// Hold a power assertion that keeps the *system* awake while recording, so the mic keeps
@@ -235,7 +282,9 @@ final class AppModel {
 
     // MARK: - Pipeline
 
-    private func runPipeline(_ id: String) async throws {
+    /// Run stages 2–7 for a session and return the written notes URL. Terminal/queue state is
+    /// owned by `drainProcessingQueue`; this only reports progress via `processingMessage`.
+    private func runPipeline(_ id: String) async throws -> URL {
         let settings = AppSettings.current()
         print("[Tatlin] runPipeline id=\(id) audioSource=\(settings.audioSource.rawValue) vault=\(settings.vaultDirectory?.path ?? "(default)")")
         let modelStore = ModelStore(sessionStoreRoot: store.root)
@@ -261,18 +310,10 @@ final class AppModel {
             store: store, asr: trio.asr, diarizer: trio.diarizer, llm: trio.llm, config: config
         )
 
-        do {
-            let url = try await pipeline.run(sessionID: id) { progress in
-                Task { @MainActor in
-                    self.status = .processing("[\(progress.stage.rawValue)] \(progress.message)")
-                }
+        return try await pipeline.run(sessionID: id) { progress in
+            Task { @MainActor in
+                self.processingMessage = "[\(progress.stage.rawValue)] \(progress.message)"
             }
-            status = .completed(url)
-            lastOutput = url
-            lastSessionID = id
-            notifyDone(url)
-        } catch {
-            status = .failed(error.localizedDescription)
         }
     }
 

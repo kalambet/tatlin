@@ -16,6 +16,11 @@ struct MenuContentView: View {
         // Non-interactive status header — a bare Label renders as a disabled menu item.
         Label(statusText, systemImage: statusSymbol)
 
+        // A previous session can still be processing in the background while you record/idle.
+        if model.isProcessing {
+            Label(processingText, systemImage: "hourglass")
+        }
+
         if !catalog.isReady {
             Divider()
             Label("On-device models not installed", systemImage: "exclamationmark.triangle.fill")
@@ -33,7 +38,7 @@ struct MenuContentView: View {
                              set: { _ in model.toggle() })) {
             Label("Recording", systemImage: "record.circle")
         }
-        .disabled(model.isBusy || !catalog.isReady)
+        .disabled(!catalog.isReady)   // recording stays available even while a prior session processes
         .keyboardShortcut("r")
 
         if let url = model.lastOutput {
@@ -64,7 +69,7 @@ struct MenuContentView: View {
             } label: {
                 Label("Resume", systemImage: "arrow.clockwise")
             }
-            .disabled(model.isBusy || model.isRecording || !catalog.isReady)
+            .disabled(model.isRecording || !catalog.isReady)
         }
 
         Divider()
@@ -86,23 +91,28 @@ struct MenuContentView: View {
     /// rendering isn't available in a native `NSMenu`, so processing/failure detail collapses
     /// to a single line (the SF Symbol carries the state cue).
     private var statusText: String {
-        switch model.status {
-        case .idle: "Idle"
-        case .recording: "Recording…"
-        case .processing(let message): message
-        case .completed: "Done"
-        case .failed(let message): message
+        if model.isRecording { return "Recording…" }
+        switch model.lastResult {
+        case .none: return "Idle"
+        case .done: return "Done"
+        case .failed(let message): return message
         }
     }
 
     private var statusSymbol: String {
-        switch model.status {
-        case .idle: "circle"
-        case .recording: "record.circle.fill"
-        case .processing: "hourglass"
-        case .completed: "checkmark.circle.fill"
-        case .failed: "exclamationmark.triangle.fill"
+        if model.isRecording { return "record.circle.fill" }
+        switch model.lastResult {
+        case .none: return "circle"
+        case .done: return "checkmark.circle.fill"
+        case .failed: return "exclamationmark.triangle.fill"
         }
+    }
+
+    /// Background-pipeline line, shown only while `model.isProcessing`.
+    private var processingText: String {
+        let message = model.processingMessage ?? "Processing…"
+        let queued = model.processing.count - 1
+        return queued > 0 ? "\(message)  (+\(queued) queued)" : message
     }
 
     private static func relativeDate(_ date: Date) -> String {
