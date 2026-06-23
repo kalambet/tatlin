@@ -113,6 +113,10 @@ public actor SCStreamRecorder {
     /// Optional explicit mic device ID (pass `nil` to use the system default).
     public nonisolated let microphoneDeviceID: String?
 
+    /// Called once if capture stalls and can't be recovered after sustained retries, so the
+    /// app can surface a failure instead of appearing to record forever.
+    private let onUnrecoverableFailure: (@Sendable (CaptureError) -> Void)?
+
     // MARK: - State
 
     private var stream: SCStream?
@@ -125,19 +129,26 @@ public actor SCStreamRecorder {
     private var watchdogTask: Task<Void, Never>?
     private var lastSystemBufferTime: Date = .distantPast
     private var lastMicBufferTime: Date = .distantPast
-    private var watchdogRestartCount = 0
-    private let maxWatchdogRestarts = 3
+    /// Guards against overlapping restarts (the watchdog tick and the stream-stopped
+    /// delegate callback can both try to restart at once).
+    private var isRestarting = false
+    /// Consecutive failed restart attempts, reset on success. Crossing the max means we give
+    /// up — loudly, via `onUnrecoverableFailure`.
+    private var consecutiveRestartFailures = 0
+    private let maxConsecutiveRestartFailures = 10   // ≈ 2–3 min of retrying at the watchdog cadence
 
     private var isRecording = false
 
     // MARK: - Init
 
     public init(
-        watchdogInterval: TimeInterval = 10,
-        microphoneDeviceID: String? = nil
+        watchdogInterval: TimeInterval = 15,
+        microphoneDeviceID: String? = nil,
+        onUnrecoverableFailure: (@Sendable (CaptureError) -> Void)? = nil
     ) {
         self.watchdogInterval = watchdogInterval
         self.microphoneDeviceID = microphoneDeviceID
+        self.onUnrecoverableFailure = onUnrecoverableFailure
     }
 
     // MARK: - Public API
@@ -168,6 +179,10 @@ public actor SCStreamRecorder {
         let stream = try await buildStream(delegate: bridge)
 
         do {
+            // Register a (discarded) screen output as well: the config carries a minimal
+            // video track, and with no `.screen` consumer SCStream floods the log with
+            // "stream output NOT found. Dropping frame" for every frame.
+            try stream.addStreamOutput(bridge, type: .screen, sampleHandlerQueue: nil)
             try stream.addStreamOutput(bridge, type: .audio, sampleHandlerQueue: nil)
             try stream.addStreamOutput(bridge, type: .microphone, sampleHandlerQueue: nil)
             try await stream.startCapture()
@@ -197,11 +212,8 @@ public actor SCStreamRecorder {
         }
         bridge = nil
 
-        // Clear writers after stopCapture returns (no more callbacks in flight).
-        writers.systemWriter?.close()
-        writers.micWriter?.close()
-        writers.systemWriter = nil
-        writers.micWriter = nil
+        // Finalize writers after stopCapture returns (no more callbacks in flight).
+        finalizeWriters()
 
         if let id = sessionID, let store {
             try store.markCompleted(.capture, for: id)
@@ -273,48 +285,80 @@ public actor SCStreamRecorder {
     }
 
     private func checkWatchdog() async {
-        guard isRecording else { return }
+        guard isRecording, !isRestarting else { return }
         let now = Date()
         let systemStalled = now.timeIntervalSince(lastSystemBufferTime) > watchdogInterval
         let micStalled = now.timeIntervalSince(lastMicBufferTime) > watchdogInterval
-        if systemStalled || micStalled {
-            await attemptRestart(reason: "stalled: system=\(systemStalled) mic=\(micStalled)")
+        // Restart only when BOTH channels go silent. A healthy stream always delivers mic
+        // buffers (silence included), so a quiet *remote* (system) channel on its own is
+        // normal — late arrivals and pre-call lulls must not trip the watchdog.
+        if systemStalled && micStalled {
+            await attemptRestart(reason: "no audio buffers for >\(Int(watchdogInterval))s")
         }
     }
 
+    /// Rebuild the SCStream after a stall or a stream-stopped delegate callback.
+    ///
+    /// Hard-won correctness points:
+    /// - **Don't touch the writers.** They append to the same files across restarts; a new
+    ///   stream on the same bridge keeps writing where we left off. Closing/reopening risked
+    ///   truncating the partial recording.
+    /// - **Back off before `startCapture`.** Tearing a stream down and immediately starting a
+    ///   new one throws `-3818 "Stream failed to start audio"` — the audio unit hasn't been
+    ///   released yet, especially with Bluetooth I/O (AirPods) renegotiating.
+    /// - **Never give up silently.** After sustained failure, fire `onUnrecoverableFailure`
+    ///   so the app shows it instead of leaving the menu saying "Recording…".
     private func attemptRestart(reason: String) async {
-        guard isRecording else { return }
-        guard watchdogRestartCount < maxWatchdogRestarts else {
-            isRecording = false
-            watchdogTask?.cancel()
-            return
-        }
-        watchdogRestartCount += 1
+        guard isRecording, !isRestarting else { return }
+        isRestarting = true
+        defer { isRestarting = false }
 
-        // Flush current writers; reopen for append after stream restart.
-        writers.systemWriter?.close()
-        writers.micWriter?.close()
-        try? writers.systemWriter?.open()
-        try? writers.micWriter?.open()
-
-        // Stop + restart the SCStream.
+        // The old stream may already be stopped (delegate path) — ignore the resulting
+        // -3808 "already stopped" error.
         if let old = stream {
+            stream = nil
             try? await old.stopCapture()
         }
-        stream = nil
+
+        // Let the audio unit settle before restarting; grow the wait as failures accrue.
+        let backoff = min(0.5 * Double(consecutiveRestartFailures + 1), 3.0)
+        try? await Task.sleep(for: .seconds(backoff))
+        guard isRecording else { return }
 
         do {
             let newStream = try await buildStream(delegate: bridge)
             if let bridge {
+                try newStream.addStreamOutput(bridge, type: .screen, sampleHandlerQueue: nil)
                 try newStream.addStreamOutput(bridge, type: .audio, sampleHandlerQueue: nil)
                 try newStream.addStreamOutput(bridge, type: .microphone, sampleHandlerQueue: nil)
             }
             try await newStream.startCapture()
-            self.stream = newStream
+            stream = newStream
             lastSystemBufferTime = Date()
             lastMicBufferTime = Date()
+            consecutiveRestartFailures = 0
         } catch {
-            // Restart failed; keep trying until maxWatchdogRestarts.
+            consecutiveRestartFailures += 1
+            guard consecutiveRestartFailures < maxConsecutiveRestartFailures else {
+                // Out of road: stop cleanly, finalize the partial WAVs so they survive, and
+                // tell the app. The session stays resumable from whatever we captured.
+                isRecording = false
+                watchdogTask?.cancel()
+                watchdogTask = nil
+                finalizeWriters()
+                bridge = nil
+                onUnrecoverableFailure?(.streamStalledUnrecoverable)
+                return
+            }
+            // Otherwise the next watchdog tick retries with a longer backoff.
         }
+    }
+
+    /// Close + clear both writers so the on-disk WAVs are valid. Idempotent.
+    private func finalizeWriters() {
+        writers.systemWriter?.close()
+        writers.micWriter?.close()
+        writers.systemWriter = nil
+        writers.micWriter = nil
     }
 }

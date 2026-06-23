@@ -169,7 +169,16 @@ final class AppModel {
                 _ = try store.create(session)
                 currentID = id
 
-                let recorder = SCStreamRecorder()
+                let recorder = SCStreamRecorder(onUnrecoverableFailure: { [weak self] error in
+                    Task { @MainActor in
+                        guard let self, self.isRecording else { return }
+                        self.allowSleep()
+                        self.recorder = nil
+                        self.status = .failed(Self.message(for: error))
+                        self.notifyCaptureFailed()
+                        self.refreshResumable()
+                    }
+                })
                 try await recorder.start(session: session, store: store)
                 self.recorder = recorder
                 status = .recording
@@ -339,6 +348,16 @@ final class AppModel {
         let content = UNMutableNotificationContent()
         content.title = "Tatlin — notes ready"
         content.body = url.lastPathComponent
+        let request = UNNotificationRequest(
+            identifier: UUID().uuidString, content: content, trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
+    }
+
+    private func notifyCaptureFailed() {
+        let content = UNMutableNotificationContent()
+        content.title = "Tatlin — recording interrupted"
+        content.body = "Audio capture stopped unexpectedly. The partial recording was saved — you can resume it from the menu."
         let request = UNNotificationRequest(
             identifier: UUID().uuidString, content: content, trigger: nil
         )
