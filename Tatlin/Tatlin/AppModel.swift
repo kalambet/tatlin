@@ -161,22 +161,13 @@ final class AppModel {
         Task {
             do {
                 let now = Date()
-
-                // Calendar peek (ADR-13). Silent on denial / no match. Skip-list is
-                // read fresh from Settings each time so an edit takes effect on the
-                // next Start without a relaunch.
                 let settings = AppSettings.current()
-                var title = Session.defaultTitle(for: now)
-                var event: EventSnapshot?
-                var pickerCandidates: [EventSnapshot] = []
-                switch await CalendarService(skipList: settings.calendarSkipList).currentCandidates(at: now) {
-                case .none:                 break
-                case .single(let snap):     title = snap.title; event = snap
-                case .multiple(let snaps):  pickerCandidates = snaps  // resolved via the picker (M3.1b)
-                }
 
+                // Start capturing IMMEDIATELY with a default title — resolving the calendar
+                // event shouldn't cost us the opening seconds of the meeting. Event metadata is
+                // attached just below, once capture is live (same pattern as the M3.1b picker).
                 let id = Session.makeID(for: now)
-                let session = Session(id: id, createdAt: now, title: title, event: event)
+                let session = Session(id: id, createdAt: now, title: Session.defaultTitle(for: now))
                 _ = try store.create(session)
                 currentID = id
 
@@ -197,12 +188,18 @@ final class AppModel {
                 capture = .recording
                 preventSleepWhileRecording()
 
-                // Stage the picker only after capture is live — keeps the recorder hot
-                // even while the user is mulling over which calendar event this is.
-                if !pickerCandidates.isEmpty {
+                // Capture is live — now resolve the calendar event (ADR-13) and patch the
+                // session. Skip-list is read fresh so a Settings edit applies on the next Start.
+                // Guard on `currentID == id` so a fast stop before resolution is respected.
+                switch await CalendarService(skipList: settings.calendarSkipList).currentCandidates(at: now) {
+                case .single(let snap) where currentID == id:
+                    applyEventMetadata(snap, to: id)
+                case .multiple(let snaps) where currentID == id:
                     pendingPickerSessionID = id
-                    pendingPickerCandidates = pickerCandidates
+                    pendingPickerCandidates = snaps
                     pendingPickerToken = UUID()
+                default:
+                    break   // no match, or stopped before the calendar resolved
                 }
             } catch let error as CaptureError {
                 capture = .idle
@@ -213,6 +210,19 @@ final class AppModel {
                 currentID = nil
                 lastResult = .failed(error.localizedDescription)
             }
+        }
+    }
+
+    /// Patch an already-capturing session with the resolved calendar event metadata (title +
+    /// event). Non-fatal: on failure the session keeps its timestamped default name.
+    private func applyEventMetadata(_ snapshot: EventSnapshot, to id: String) {
+        do {
+            var session = try store.load(id: id)
+            session.title = snapshot.title
+            session.event = snapshot
+            try store.write(session)
+        } catch {
+            print("[Tatlin] start: couldn't attach event metadata: \(error)")
         }
     }
 
