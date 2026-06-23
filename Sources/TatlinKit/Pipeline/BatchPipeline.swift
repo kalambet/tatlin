@@ -319,7 +319,10 @@ public struct BatchPipeline: Sendable {
         seriesBlock: String?,
         stateUpdate: (current: String?, title: String)?
     ) async throws -> (notes: MeetingNotes, newState: String?) {
-        let chunks = TranscriptChunker.plan(transcript)
+        // M3.9: the series-continuity block rides in the single-pass / reduce prompt, so reserve
+        // its budget when deciding single-pass vs map-reduce (ml-reviewer #8).
+        let reserved = seriesBlock.map(TranscriptChunker.estimateTokens) ?? 0
+        let chunks = TranscriptChunker.plan(transcript, reservedTokens: reserved)
         let detected = transcript.language
         let engine = llm
         let params = config.llmParameters

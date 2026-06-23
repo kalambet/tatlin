@@ -41,12 +41,18 @@ public enum TranscriptChunker {
 
     /// Plan how to summarize `transcript`. One chunk → single-pass; ≥2 → map-reduce.
     /// Splits only at segment boundaries; oversized single segments become their own chunk.
-    public static func plan(_ transcript: AlignedTranscript, budget: Budget = Budget()) -> [Chunk] {
+    ///
+    /// `reservedTokens` shrinks the single-pass budget to account for other prompt content sent
+    /// alongside the transcript — chiefly the M3.9 series-continuity block — so a near-limit
+    /// transcript tips to map-reduce (where series context rides only the small reduce step)
+    /// instead of inflating one pass and the KV cache that the 28k limit is sized to bound
+    /// (ml-reviewer #8).
+    public static func plan(_ transcript: AlignedTranscript, budget: Budget = Budget(), reservedTokens: Int = 0) -> [Chunk] {
         let segments = transcript.segments
         guard !segments.isEmpty else { return [] }
 
         let total = segments.reduce(0) { $0 + segmentTokens($1) }
-        if total <= budget.singlePassLimit {
+        if total <= budget.singlePassLimit - reservedTokens {
             return [Chunk(segments: segments)]
         }
 
