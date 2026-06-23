@@ -1,6 +1,8 @@
 import AVFoundation
+import CoreAudio
 import CoreMedia
 import Foundation
+import OSLog
 import ScreenCaptureKit
 
 // MARK: - Errors
@@ -117,6 +119,10 @@ public actor SCStreamRecorder {
     /// app can surface a failure instead of appearing to record forever.
     private let onUnrecoverableFailure: (@Sendable (CaptureError) -> Void)?
 
+    /// `log show --predicate 'subsystem == "dev.kalambet.tatlin" && category == "capture"'`
+    private nonisolated let log = Logger(subsystem: "dev.kalambet.tatlin", category: "capture")
+    private nonisolated let routeListenerQueue = DispatchQueue(label: "dev.kalambet.tatlin.route-listener")
+
     // MARK: - State
 
     private var stream: SCStream?
@@ -136,6 +142,10 @@ public actor SCStreamRecorder {
     /// up — loudly, via `onUnrecoverableFailure`.
     private var consecutiveRestartFailures = 0
     private let maxConsecutiveRestartFailures = 10   // ≈ 2–3 min of retrying at the watchdog cadence
+
+    /// Pending debounced restart after an audio route change.
+    private var routeSettleTask: Task<Void, Never>?
+    private var routeListenerBlock: AudioObjectPropertyListenerBlock?
 
     private var isRecording = false
 
@@ -196,13 +206,17 @@ public actor SCStreamRecorder {
         lastSystemBufferTime = Date()
         lastMicBufferTime = Date()
         startWatchdog()
+        startRouteListener()
+        log.notice("capture started: session=\(session.id, privacy: .public)")
     }
 
     /// Stop recording, flush WAVs, and mark the capture stage complete in `session.json`.
     public func stop() async throws {
         guard isRecording else { return }
         isRecording = false
+        log.notice("capture stopping (user)")
 
+        stopRouteListener()
         watchdogTask?.cancel()
         watchdogTask = nil
 
@@ -322,6 +336,7 @@ public actor SCStreamRecorder {
 
         // Let the audio unit settle before restarting; grow the wait as failures accrue.
         let backoff = min(0.5 * Double(consecutiveRestartFailures + 1), 3.0)
+        log.notice("restart: \(reason, privacy: .public) — backoff \(backoff, format: .fixed(precision: 1))s")
         try? await Task.sleep(for: .seconds(backoff))
         guard isRecording else { return }
 
@@ -337,12 +352,16 @@ public actor SCStreamRecorder {
             lastSystemBufferTime = Date()
             lastMicBufferTime = Date()
             consecutiveRestartFailures = 0
+            log.notice("restart succeeded")
         } catch {
             consecutiveRestartFailures += 1
+            log.error("restart failed (\(self.consecutiveRestartFailures)/\(self.maxConsecutiveRestartFailures)): \(error.localizedDescription, privacy: .public)")
             guard consecutiveRestartFailures < maxConsecutiveRestartFailures else {
                 // Out of road: stop cleanly, finalize the partial WAVs so they survive, and
                 // tell the app. The session stays resumable from whatever we captured.
                 isRecording = false
+                log.error("capture unrecoverable — surfacing failure")
+                stopRouteListener()
                 watchdogTask?.cancel()
                 watchdogTask = nil
                 finalizeWriters()
@@ -360,5 +379,64 @@ public actor SCStreamRecorder {
         writers.micWriter?.close()
         writers.systemWriter = nil
         writers.micWriter = nil
+    }
+
+    // MARK: - Audio route changes
+
+    private static let routeSelectors: [AudioObjectPropertySelector] = [
+        kAudioHardwarePropertyDefaultOutputDevice,
+        kAudioHardwarePropertyDefaultInputDevice,
+    ]
+
+    /// Watch for default audio-device changes. An AirPods (Bluetooth) device switching into
+    /// call/headset mode at the start of a meeting can leave SCStream's system-audio tap
+    /// desynced and silent while the mic stays healthy — and the buffer watchdog can't see it,
+    /// because silent buffers still arrive. Re-establishing the stream on a route change picks
+    /// up the settled audio config.
+    private func startRouteListener() {
+        let block: AudioObjectPropertyListenerBlock = { [weak self] _, _ in
+            guard let self else { return }
+            Task { await self.handleRouteChange() }
+        }
+        routeListenerBlock = block
+        for selector in Self.routeSelectors {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectAddPropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &addr, routeListenerQueue, block
+            )
+        }
+    }
+
+    private func stopRouteListener() {
+        routeSettleTask?.cancel()
+        routeSettleTask = nil
+        guard let block = routeListenerBlock else { return }
+        for selector in Self.routeSelectors {
+            var addr = AudioObjectPropertyAddress(
+                mSelector: selector,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            AudioObjectRemovePropertyListenerBlock(
+                AudioObjectID(kAudioObjectSystemObject), &addr, routeListenerQueue, block
+            )
+        }
+        routeListenerBlock = nil
+    }
+
+    /// Debounced — route changes fire in bursts; re-establish once the route settles.
+    private func handleRouteChange() {
+        guard isRecording else { return }
+        log.notice("audio route changed — re-establishing capture once it settles")
+        routeSettleTask?.cancel()
+        routeSettleTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.5))
+            guard !Task.isCancelled else { return }
+            await self?.attemptRestart(reason: "audio route changed")
+        }
     }
 }
