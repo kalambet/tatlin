@@ -65,6 +65,10 @@ public struct BatchPipeline: Sendable {
         /// its own default. Set from Settings → Spoken language; without it non-English
         /// meetings are biased toward the engine default (ml-reviewer #2).
         public var languageHint: String?
+        /// Wall-clock ceiling for a single LLM completion. A stalled generation fails the job
+        /// (and unblocks the serial processing queue) instead of hanging forever (ml-reviewer
+        /// #5). Generous by default — normal generation is bounded by `maxTokens`.
+        public var llmTimeoutSeconds: TimeInterval
 
         public init(
             outputLanguage: SummaryPrompt.OutputLanguage = .matchMeeting,
@@ -74,7 +78,8 @@ public struct BatchPipeline: Sendable {
             vaultDirectory: URL? = nil,
             llmParameters: LLMParameters = LLMParameters(),
             audioSource: AudioSource = .merged,
-            languageHint: String? = nil
+            languageHint: String? = nil,
+            llmTimeoutSeconds: TimeInterval = 600
         ) {
             self.outputLanguage = outputLanguage
             self.ownerName = ownerName
@@ -84,6 +89,7 @@ public struct BatchPipeline: Sendable {
             self.llmParameters = llmParameters
             self.audioSource = audioSource
             self.languageHint = languageHint
+            self.llmTimeoutSeconds = llmTimeoutSeconds
         }
     }
 
@@ -337,7 +343,7 @@ public struct BatchPipeline: Sendable {
                         transcriptBody: TranscriptChunker.render(chunk), roster: roster,
                         language: lang, detectedLanguage: detected, chunkIndex: i, chunkCount: chunks.count
                     )
-                    partials.append(try await llm.complete(messages: messages, parameters: params))
+                    partials.append(try await generate(llm, messages, params))
                 }
                 let reduceMessages = SummaryPrompt.reduce(partials: partials, roster: roster, language: lang, detectedLanguage: detected, series: seriesBlock)
                 summaryRaw = try await complete(llm, reduceMessages, params, language: lang)
@@ -350,20 +356,57 @@ public struct BatchPipeline: Sendable {
                     currentState: stateUpdate.current, meetingTitle: stateUpdate.title,
                     meetingNotes: notesMarkdown, language: lang
                 )
-                newState = try await llm.complete(messages: stateMessages, parameters: LLMParameters(maxTokens: 1500))
+                newState = try await generate(llm, stateMessages, LLMParameters(maxTokens: 1500))
             }
             return (summaryRaw, newState)
         }
         return (NotesParser.parse(raw, language: detected), newState)
     }
 
+    // MARK: - Bounded LLM completion (ml-reviewer #5)
+
+    /// One LLM completion bounded by `config.llmTimeoutSeconds`. A stalled generation throws
+    /// (failing the job and unblocking the serial processing queue) instead of hanging forever.
+    /// Every Stage-6 completion routes through here.
+    private func generate(_ llm: any LLMEngine, _ messages: [LLMMessage], _ parameters: LLMParameters) async throws -> String {
+        try await Self.withTimeout(seconds: config.llmTimeoutSeconds) {
+            try await llm.complete(messages: messages, parameters: parameters)
+        }
+    }
+
+    private struct LLMTimeoutError: Error, Sendable { let seconds: TimeInterval }
+
+    /// Race `operation` against a wall-clock deadline. On timeout the operation task is cancelled
+    /// and `LLMTimeoutError` is thrown. Cooperative: mlx-swift-lm checks `Task` cancellation
+    /// between tokens, so a live generation stops at the next token and frees its buffers before
+    /// the model is unloaded. If an engine ignores cancellation, structured-concurrency cleanup
+    /// still awaits it (bounded by `maxTokens`) — deliberate, since abandoning a live MLX call
+    /// while its model is being unloaded would be a use-after-free.
+    private static func withTimeout<T: Sendable>(
+        seconds: TimeInterval,
+        operation: @escaping @Sendable () async throws -> T
+    ) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask { try await operation() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+                throw LLMTimeoutError(seconds: seconds)
+            }
+            guard let result = try await group.next() else {
+                throw LLMTimeoutError(seconds: seconds)
+            }
+            group.cancelAll()
+            return result
+        }
+    }
+
     /// Complete + one validator-driven repair pass (research Q6).
     private func complete(_ llm: any LLMEngine, _ messages: [LLMMessage], _ params: LLMParameters, language: SummaryPrompt.OutputLanguage) async throws -> String {
-        let first = try await llm.complete(messages: messages, parameters: params)
+        let first = try await generate(llm, messages, params)
         let problems = NotesParser.validate(first)
         guard !problems.isEmpty else { return first }
         let repairMessages = SummaryPrompt.repair(previousOutput: first, problems: problems, language: language)
-        let repaired = try await llm.complete(messages: repairMessages, parameters: params)
+        let repaired = try await generate(llm, repairMessages, params)
         // Keep the repair only if it actually validates; else fall back to the first attempt.
         return NotesParser.validate(repaired).isEmpty ? repaired : first
     }
