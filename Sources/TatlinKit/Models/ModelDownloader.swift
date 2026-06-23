@@ -203,15 +203,26 @@ public actor ModelDownloader {
         ))
     }
 
-    /// Compute the hex SHA-256 of a file at `url` using CryptoKit.
+    /// Compute the hex SHA-256 of a file at `url`, streamed in fixed-size chunks so hashing a
+    /// multi-GB safetensors shard costs ~4 MiB of memory rather than the whole file at once.
     private func computeSHA256(at url: URL) throws -> String {
-        let data: Data
+        let handle: FileHandle
         do {
-            data = try Data(contentsOf: url)
+            handle = try FileHandle(forReadingFrom: url)
         } catch {
             throw DownloadError.filesystemError(underlying: error)
         }
-        let digest = SHA256.hash(data: data)
+        defer { try? handle.close() }
+
+        var hasher = SHA256()
+        do {
+            while let chunk = try handle.read(upToCount: 4 * 1024 * 1024), !chunk.isEmpty {
+                hasher.update(data: chunk)
+            }
+        } catch {
+            throw DownloadError.filesystemError(underlying: error)
+        }
+        let digest = hasher.finalize()
         return digest.map { String(format: "%02x", $0) }.joined()
     }
 
