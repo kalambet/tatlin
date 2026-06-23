@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import Observation
+import OSLog
 import TatlinKit
 import TatlinML
 import UserNotifications
@@ -73,6 +74,7 @@ final class AppModel {
         return .asset("MenuBarTower")
     }
 
+    private nonisolated let log = Logger(subsystem: "dev.kalambet.tatlin", category: "app")
     private let store: SessionStore
     private var recorder: SCStreamRecorder?
     private var currentID: String?
@@ -108,7 +110,7 @@ final class AppModel {
             try store.write(session)
         } catch {
             // Non-fatal: session.json was already written with the default name.
-            print("[Tatlin] picker: failed to update session metadata: \(error)")
+            log.error("picker: failed to update session metadata: \(error.localizedDescription, privacy: .public)")
         }
         dismissPicker()
     }
@@ -122,7 +124,7 @@ final class AppModel {
             session.event = nil
             try store.write(session)
         } catch {
-            print("[Tatlin] picker: failed to update session title: \(error)")
+            log.error("picker: failed to update session title: \(error.localizedDescription, privacy: .public)")
         }
         dismissPicker()
     }
@@ -222,7 +224,7 @@ final class AppModel {
             session.event = snapshot
             try store.write(session)
         } catch {
-            print("[Tatlin] start: couldn't attach event metadata: \(error)")
+            log.error("start: couldn't attach event metadata: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -234,7 +236,7 @@ final class AppModel {
             do {
                 try await recorder?.stop()
             } catch {
-                print("[Tatlin] recorder.stop: \(error)")  // still hand off whatever we captured
+                log.error("recorder.stop: \(error.localizedDescription, privacy: .public)")  // still hand off whatever we captured
             }
             recorder = nil
             capture = .idle                  // ready to record again immediately
@@ -307,7 +309,7 @@ final class AppModel {
     /// owned by `drainProcessingQueue`; this only reports progress via `processingMessage`.
     private func runPipeline(_ id: String) async throws -> URL {
         let settings = AppSettings.current()
-        print("[Tatlin] runPipeline id=\(id) audioSource=\(settings.audioSource.rawValue) vault=\(settings.vaultDirectory?.path ?? "(default)")")
+        log.notice("runPipeline id=\(id, privacy: .public) audioSource=\(settings.audioSource.rawValue, privacy: .public) vault=\(settings.vaultDirectory?.path ?? "(default)", privacy: .public)")
         let modelStore = ModelStore(sessionStoreRoot: store.root)
         let trio = MLEngineFactory.make(store: modelStore, asrBackend: .parakeet)
 
