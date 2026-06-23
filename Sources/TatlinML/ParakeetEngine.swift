@@ -108,9 +108,13 @@ public actor ParakeetEngine: ASREngine {
         //    Source: .build/checkouts/mlx-audio-swift/Sources/MLXAudioCore/AudioUtils.swift:58
         let (_, samples) = try loadAudioArray(from: audioURL, sampleRate: 16000)
 
-        // 2. Run inference. `STTGenerateParameters.language` is a non-optional String
-        //    (default "English"). Parakeet-v3 is multilingual and auto-detects per segment;
-        //    pass the hint when set, else "English". (Tune language handling during eval.)
+        // 2. Run inference. `maxTokens` (8192) is PER CHUNK, not whole-file: mlx-audio
+        //    internally windows long audio into `chunkDuration`-second chunks (default
+        //    1200 s / 20 min, 15 s overlap) and merges them, so a 1–2 h meeting is fully
+        //    transcribed and 8192 tokens is ample for one 20-min window (ml-reviewer #6
+        //    verified — ParakeetModel.swift:86-119; no silent truncation).
+        //    `language` is non-optional (default "English"); pass the hint when set, else the
+        //    engine default (ml-reviewer #2 wired the hint from Settings → Spoken language).
         //    Source: .build/checkouts/mlx-audio-swift/Sources/MLXAudioSTT/Generation.swift:3
         let params = STTGenerateParameters(
             maxTokens: 8192,
