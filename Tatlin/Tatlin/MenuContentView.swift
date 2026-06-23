@@ -67,7 +67,7 @@ struct MenuContentView: View {
                     .contentShape(Rectangle())
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(MenuRowButtonStyle())
         .padding(12)
         .frame(width: 300)
     }
@@ -154,4 +154,38 @@ struct MenuContentView: View {
 
     private var buttonTitle: String { model.isRecording ? "Stop" : "Start Recording" }
     private var buttonSymbol: String { model.isRecording ? "stop.fill" : "record.circle" }
+}
+
+/// Row style for the MenuBarExtra `.window` panel. Because the panel is custom SwiftUI
+/// (not a native `NSMenu`), rows don't get hover highlighting for free. This mirrors the
+/// macOS menu-bar extras (Wi-Fi / Battery / Control Center): a subtle translucent fill on
+/// hover/press that keeps the text color, with disabled rows neither highlighting nor
+/// reacting to hover.
+private struct MenuRowButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        MenuRow(configuration: configuration)
+    }
+
+    private struct MenuRow: View {
+        let configuration: Configuration
+        @Environment(\.isEnabled) private var isEnabled
+        @State private var hovering = false
+
+        var body: some View {
+            let active = isEnabled && (hovering || configuration.isPressed)
+            configuration.label
+                .opacity(isEnabled ? 1 : 0.35)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 5)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .background {
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.primary.opacity(configuration.isPressed ? 0.16 : 0.10))
+                        .opacity(active ? 1 : 0)
+                }
+                .onHover { hovering = isEnabled && $0 }
+                .animation(.easeOut(duration: 0.08), value: active)
+        }
+    }
 }
