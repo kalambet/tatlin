@@ -30,7 +30,7 @@ struct Run: AsyncParsableCommand {
 
     func run() async throws {
         let store = try SessionStore()
-        let engines = stub
+        let engines = try stub
             ? EngineFactory.makeStub()
             : EngineFactory.makeReal(modelStore: ModelStore(sessionStoreRoot: store.root))
         var config = BatchPipeline.Config()
@@ -75,8 +75,8 @@ enum EngineFactory {
 
     /// The real MLX/FluidAudio engines (Parakeet ASR, FluidAudio diarizer, Qwen summarizer),
     /// resolved against the model directories under `modelStore`. Requires downloaded weights.
-    static func makeReal(modelStore: ModelStore) -> Engines {
-        let trio = MLEngineFactory.make(store: modelStore, asrBackend: .parakeet)
+    static func makeReal(modelStore: ModelStore) throws -> Engines {
+        let trio = try MLEngineFactory.make(store: modelStore, asrBackend: .parakeet)
         return Engines(asr: trio.asr, diarizer: trio.diarizer, llm: trio.llm)
     }
 }

@@ -311,7 +311,7 @@ final class AppModel {
         let settings = AppSettings.current()
         log.notice("runPipeline id=\(id, privacy: .public) audioSource=\(settings.audioSource.rawValue, privacy: .public) vault=\(settings.vaultDirectory?.path ?? "(default)", privacy: .public)")
         let modelStore = ModelStore(sessionStoreRoot: store.root)
-        let trio = MLEngineFactory.make(store: modelStore, asrBackend: .parakeet)
+        let trio = try MLEngineFactory.make(store: modelStore, asrBackend: .parakeet)
 
         // Sandboxed write to a user-picked vault is only allowed while the security
         // scope is held. Start on entry, stop on exit; nil-fallback means we'll write

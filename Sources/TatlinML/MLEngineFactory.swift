@@ -66,6 +66,19 @@ public enum ASRBackend: Sendable {
 /// )
 /// let (asr, diarizer, llm) = MLEngineFactory.make(directories: dirs)
 /// ```
+/// Failures raised when wiring the real engines.
+public enum MLEngineFactoryError: Error, Sendable, CustomStringConvertible {
+    /// A mandatory model key was absent from the catalogue — misconfigured manifest or the
+    /// model isn't downloaded/registered.
+    case missingModel(key: String)
+
+    public var description: String {
+        switch self {
+        case .missingModel(let key): "Required model '\(key)' is missing from the catalogue."
+        }
+    }
+}
+
 @available(macOS 15, *)
 public enum MLEngineFactory {
 
@@ -111,17 +124,20 @@ public enum MLEngineFactory {
         store: ModelStore,
         catalogue: [ModelSpec] = ModelManifest.default,
         asrBackend: ASRBackend = .parakeet
-    ) -> (asr: any ASREngine, diarizer: any DiarizerEngine, llm: any LLMEngine) {
+    ) throws -> (asr: any ASREngine, diarizer: any DiarizerEngine, llm: any LLMEngine) {
         // Resolve spec by key from the catalogue.
         func dir(key: String) -> URL? {
             catalogue.first(where: { $0.key == key }).map { store.directory(for: $0) }
         }
 
-        // These are required; force-unwrap is acceptable here — a missing spec is a
-        // programming error caught at startup by ModelHost.  In production, ModelHost
-        // verifies all mandatory specs are present before calling this factory.
-        let parakeetDir = dir(key: "parakeet-tdt-0.6b-v3")!
-        let qwenDir     = dir(key: "qwen3-30b-a3b-instruct-2507-mlx-8bit")!
+        // Parakeet (ASR) and Qwen (LLM) are mandatory; a missing key means a misconfigured
+        // catalogue or an un-downloaded model — throw a clear error instead of crashing on `!`.
+        guard let parakeetDir = dir(key: "parakeet-tdt-0.6b-v3") else {
+            throw MLEngineFactoryError.missingModel(key: "parakeet-tdt-0.6b-v3")
+        }
+        guard let qwenDir = dir(key: "qwen3-30b-a3b-instruct-2507-mlx-8bit") else {
+            throw MLEngineFactoryError.missingModel(key: "qwen3-30b-a3b-instruct-2507-mlx-8bit")
+        }
 
         let dirs = EngineDirectories(
             parakeet:   parakeetDir,
