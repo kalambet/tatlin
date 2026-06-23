@@ -22,6 +22,7 @@ struct AboutView: View {
                         .renderingMode(.template)
                         .resizable().scaledToFit().frame(width: 28, height: 28)
                         .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Tatlin").font(.headline)
                         Text(appVersion).font(.caption).foregroundStyle(.secondary)

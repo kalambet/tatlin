@@ -67,6 +67,7 @@ struct EventPickerView: View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
             Image(systemName: "calendar")
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(c.title).font(.body)
                 HStack(spacing: 6) {
