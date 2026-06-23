@@ -91,6 +91,7 @@ struct MenuContentView: View {
     /// rendering isn't available in a native `NSMenu`, so processing/failure detail collapses
     /// to a single line (the SF Symbol carries the state cue).
     private var statusText: String {
+        if model.isStarting { return "Starting…" }
         if model.isRecording { return "Recording…" }
         switch model.lastResult {
         case .none: return "Idle"
@@ -100,6 +101,7 @@ struct MenuContentView: View {
     }
 
     private var statusSymbol: String {
+        if model.isStarting { return "record.circle" }
         if model.isRecording { return "record.circle.fill" }
         switch model.lastResult {
         case .none: return "circle"

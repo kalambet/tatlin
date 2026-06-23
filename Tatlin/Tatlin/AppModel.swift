@@ -22,7 +22,7 @@ final class AppModel {
 
     /// Capture state — deliberately independent of processing so a new recording can start
     /// the instant the previous one stops (its pipeline runs in the background queue below).
-    enum Capture: Equatable { case idle, recording }
+    enum Capture: Equatable { case idle, starting, recording }
     private(set) var capture: Capture = .idle
 
     /// A session waiting for (or undergoing) the batch pipeline.
@@ -60,12 +60,15 @@ final class AppModel {
     private var pendingPickerSessionID: String? = nil
 
     var isRecording: Bool { capture == .recording }
+    /// True while a Start is in flight (engine spinning up). Blocks a re-entrant Start and
+    /// drives the menu-bar glyph immediately, so a slow start can't invite a double-click.
+    var isStarting: Bool { capture == .starting }
     var isProcessing: Bool { !processing.isEmpty }
 
-    /// Menu bar glyph (M3.7): recording (red tower) takes priority; otherwise the hourglass
+    /// Menu bar glyph (M3.7): recording/starting show the red tower; otherwise the hourglass
     /// while a background pipeline runs; otherwise the idle tower.
     var menuBarIcon: MenuBarIcon {
-        if capture == .recording { return .asset("MenuBarTowerRecording") }
+        if capture != .idle { return .asset("MenuBarTowerRecording") }
         if isProcessing { return .symbol("hourglass") }
         return .asset("MenuBarTower")
     }
@@ -144,6 +147,7 @@ final class AppModel {
     func toggle() {
         switch capture {
         case .idle:      start()   // allowed even while a previous session is still processing
+        case .starting:  break     // a Start is already in flight — ignore the re-entry
         case .recording: stop()
         }
     }
@@ -151,6 +155,9 @@ final class AppModel {
     // MARK: - Capture
 
     private func start() {
+        guard capture == .idle else { return }   // block a re-entrant Start (double-click race)
+        capture = .starting                       // synchronous: also flips the glyph immediately
+        lastResult = .none
         Task {
             do {
                 let now = Date()
@@ -188,7 +195,6 @@ final class AppModel {
                 try await recorder.start(session: session, store: store)
                 self.recorder = recorder
                 capture = .recording
-                lastResult = .none
                 preventSleepWhileRecording()
 
                 // Stage the picker only after capture is live — keeps the recorder hot
