@@ -61,6 +61,10 @@ public struct BatchPipeline: Sendable {
         public var llmParameters: LLMParameters
         /// Channel that feeds ASR + diarization. Defaults to `.system`.
         public var audioSource: AudioSource
+        /// Spoken-language hint for ASR (e.g. "English", "German"). `nil` lets the engine use
+        /// its own default. Set from Settings → Spoken language; without it non-English
+        /// meetings are biased toward the engine default (ml-reviewer #2).
+        public var languageHint: String?
 
         public init(
             outputLanguage: SummaryPrompt.OutputLanguage = .matchMeeting,
@@ -69,7 +73,8 @@ public struct BatchPipeline: Sendable {
             enrollmentThreshold: Double = 0.7,
             vaultDirectory: URL? = nil,
             llmParameters: LLMParameters = LLMParameters(),
-            audioSource: AudioSource = .merged
+            audioSource: AudioSource = .merged,
+            languageHint: String? = nil
         ) {
             self.outputLanguage = outputLanguage
             self.ownerName = ownerName
@@ -78,6 +83,7 @@ public struct BatchPipeline: Sendable {
             self.vaultDirectory = vaultDirectory
             self.llmParameters = llmParameters
             self.audioSource = audioSource
+            self.languageHint = languageHint
         }
     }
 
@@ -112,7 +118,7 @@ public struct BatchPipeline: Sendable {
         if shouldRun(.transcription, from: fromStage) {
             progress(Progress(stage: .transcription, message: "Resampling + transcribing"))
             let asrEngine = asr
-            let opts = ASROptions(wordTimestamps: true)
+            let opts = ASROptions(languageHint: config.languageHint, wordTimestamps: true)
             switch config.audioSource {
             case .merged:
                 let systemInput = try resampled(session.systemAudioFile, in: dir, sessionID: sessionID)

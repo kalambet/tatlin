@@ -327,7 +327,8 @@ final class AppModel {
             outputLanguage: settings.outputLanguage,
             ownerName: settings.ownerName,
             vaultDirectory: vaultURL,
-            audioSource: settings.audioSource
+            audioSource: settings.audioSource,
+            languageHint: settings.spokenLanguage
         )
         let pipeline = BatchPipeline(
             store: store, asr: trio.asr, diarizer: trio.diarizer, llm: trio.llm, config: config
@@ -455,6 +456,8 @@ struct AppSettings {
     var ownerName: String
     /// Resolved skip-list: the user's custom entries when non-empty, else `defaultSkipList`.
     var calendarSkipList: [String]
+    /// Spoken-language hint for ASR; `nil` = auto-detect (engine default).
+    var spokenLanguage: String?
 
     static func current() -> AppSettings {
         let defaults = UserDefaults.standard
@@ -466,6 +469,16 @@ struct AppSettings {
         case "german":  language = .pinned("Deutsch")
         case "russian": language = .pinned("Русский")
         default:        language = .matchMeeting
+        }
+
+        // Spoken language drives ASR's language hint. Parakeet's default is the English name,
+        // so pass full English language names; "auto" leaves it nil for engine auto-detection.
+        let spoken: String?
+        switch defaults.string(forKey: "spokenLanguage") ?? "auto" {
+        case "english": spoken = "English"
+        case "german":  spoken = "German"
+        case "russian": spoken = "Russian"
+        default:        spoken = nil
         }
 
         let owner = defaults.string(forKey: "ownerName") ?? "You"
@@ -485,7 +498,8 @@ struct AppSettings {
             audioSource: source,
             outputLanguage: language,
             ownerName: owner.isEmpty ? "You" : owner,
-            calendarSkipList: skipList
+            calendarSkipList: skipList,
+            spokenLanguage: spoken
         )
     }
 }

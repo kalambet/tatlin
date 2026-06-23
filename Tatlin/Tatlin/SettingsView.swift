@@ -16,6 +16,7 @@ struct SettingsView: View {
     @AppStorage("vaultPath") private var vaultPath = ""
     @AppStorage("audioSource") private var audioSource = "merged"
     @AppStorage("outputLanguage") private var outputLanguage = "match"
+    @AppStorage("spokenLanguage") private var spokenLanguage = "auto"
     @AppStorage("ownerName") private var ownerName = "You"
     @AppStorage("calendarSkipList") private var calendarSkipListRaw = ""
     @AppStorage("onboardingComplete") private var onboardingComplete = false
@@ -80,6 +81,14 @@ struct SettingsView: View {
                     Text("System only (advanced)").tag("system")
                 }
                 .pickerStyle(.radioGroup)
+                Picker("Spoken language", selection: $spokenLanguage) {
+                    Text("Auto-detect").tag("auto")
+                    Text("English").tag("english")
+                    Text("German").tag("german")
+                    Text("Russian").tag("russian")
+                }
+                .help("The language spoken in your meetings. A hint improves transcription "
+                    + "accuracy for non-English audio; Auto-detect lets the model decide.")
                 TextField("Your name", text: $ownerName)
             }
 
