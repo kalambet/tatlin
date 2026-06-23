@@ -85,6 +85,7 @@ struct SpeakerNamingView: View {
                 ))
                 .textFieldStyle(.roundedBorder)
                 .frame(maxWidth: 220)
+                .accessibilityLabel("Name for speaker \(c.label)")
             }
             if !c.sampleText.isEmpty {
                 Text("“\(c.sampleText)”")
