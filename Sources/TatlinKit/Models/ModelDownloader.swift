@@ -68,14 +68,18 @@ public actor ModelDownloader {
         for file in spec.files {
             let destination = store.localURL(for: file, in: spec)
 
-            // Skip if already present and verified.
+            // Skip if already present and verified — against the manifest hash when pinned,
+            // else a trust-on-first-use hash recorded at download time. A mismatch (on-disk
+            // corruption/tampering) falls through to a re-download.
             if FileManager.default.fileExists(atPath: destination.path) {
-                if let expected = file.sha256 {
+                if let expected = file.sha256 ?? recordedHashes(for: spec)[file.relativePath] {
                     let existing = try computeSHA256(at: destination)
                     if existing.lowercased() == expected.lowercased() { continue }
                     // Mismatch — re-download.
                 } else {
-                    continue  // No checksum to verify; treat as present.
+                    // Nothing to verify against yet — record the current hash so later loads can.
+                    record(hash: try computeSHA256(at: destination), for: file, in: spec)
+                    continue
                 }
             }
 
@@ -103,17 +107,17 @@ public actor ModelDownloader {
                 onProgress: onProgress
             )
 
-            // Verify checksum before moving into place.
-            if let expected = file.sha256 {
-                let got = try computeSHA256(at: tmp)
-                guard got.lowercased() == expected.lowercased() else {
-                    throw DownloadError.checksumMismatch(
-                        file: file.relativePath,
-                        expected: expected,
-                        got: got
-                    )
-                }
+            // Verify against the manifest hash when pinned, and always record the computed hash
+            // so subsequent loads can detect on-disk corruption (trust-on-first-use).
+            let got = try computeSHA256(at: tmp)
+            if let expected = file.sha256, got.lowercased() != expected.lowercased() {
+                throw DownloadError.checksumMismatch(
+                    file: file.relativePath,
+                    expected: expected,
+                    got: got
+                )
             }
+            record(hash: got, for: file, in: spec)
 
             // Atomic move: overwrite any stale file at destination.
             do {
@@ -209,6 +213,30 @@ public actor ModelDownloader {
         }
         let digest = SHA256.hash(data: data)
         return digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    // MARK: - Trust-on-first-use hashes
+
+    /// Sidecar mapping `relativePath → sha256`, written on first download so later loads can
+    /// verify on-disk integrity even when the manifest hash is nil. This hardens against
+    /// corruption/tampering of cached files; it does NOT replace pinning the real upstream
+    /// hashes in the manifest (the stronger, first-download guarantee).
+    private func sidecarURL(for spec: ModelSpec) -> URL {
+        store.directory(for: spec).appendingPathComponent(".tatlin-sha256.json")
+    }
+
+    private func recordedHashes(for spec: ModelSpec) -> [String: String] {
+        guard let data = try? Data(contentsOf: sidecarURL(for: spec)),
+              let map = try? JSONDecoder().decode([String: String].self, from: data) else { return [:] }
+        return map
+    }
+
+    private func record(hash: String, for file: ModelFile, in spec: ModelSpec) {
+        var map = recordedHashes(for: spec)
+        map[file.relativePath] = hash
+        if let data = try? JSONEncoder().encode(map) {
+            try? data.write(to: sidecarURL(for: spec), options: .atomic)
+        }
     }
 }
 
