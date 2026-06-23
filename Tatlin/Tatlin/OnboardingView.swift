@@ -29,29 +29,29 @@ struct OnboardingView: View {
         }
     }
 
-    /// Bring the onboarding window back to the front. Each permission prompt is presented
-    /// by another process and returns focus to whatever was behind us, so after a grant
-    /// the wizard would otherwise sink beneath the other desktop windows (most noticeably
-    /// after the Calendar prompt — it looked like the app had closed). `orderFrontRegardless`
-    /// raises the window above other apps even though we're an LSUIElement agent.
+    /// Re-raise the wizard after each permission prompt hands focus back to the prompting
+    /// process (most noticeably after the Calendar prompt — it looked like the app had
+    /// closed). Targets the window by title because Settings may also be open (re-run flow).
     private func focusWindow() {
-        NSApp.activate(ignoringOtherApps: true)
-        if let window = NSApp.windows.first(where: { $0.title == "Welcome to Tatlin" }) {
-            window.makeKeyAndOrderFront(nil)
-            window.orderFrontRegardless()
-        }
+        WindowFocus.bringToFront(titled: onboardingWindowTitle)
     }
 
     // MARK: - Header
 
     private var header: some View {
-        HStack {
+        let step = controller.step.rawValue + 1
+        let total = OnboardingController.Step.allCases.count
+        return HStack(spacing: 10) {
             Label("Welcome to Tatlin", systemImage: "waveform")
                 .font(.title3.bold())
             Spacer()
-            Text("\(controller.step.rawValue + 1) of \(OnboardingController.Step.allCases.count)")
+            Text("\(step) of \(total)")
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            ProgressView(value: Double(step), total: Double(total))
+                .frame(width: 70)
+                .accessibilityLabel("Step \(step) of \(total)")
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 14)

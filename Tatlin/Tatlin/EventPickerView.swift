@@ -59,12 +59,7 @@ struct EventPickerView: View {
         .padding(20)
         .frame(width: 460)
         .onAppear {
-            // LSUIElement app: force the picker window forward.
-            NSApp.activate(ignoringOtherApps: true)
-            if let window = NSApp.keyWindow ?? NSApp.windows.last(where: { $0.canBecomeKey }) {
-                window.makeKeyAndOrderFront(nil)
-                window.orderFrontRegardless()
-            }
+            WindowFocus.bringToFront()  // LSUIElement app: force the picker window forward.
         }
     }
 

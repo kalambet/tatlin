@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import TatlinKit
 
@@ -47,7 +48,7 @@ struct TatlinApp: App {
         .windowResizability(.contentSize)
         .defaultPosition(.center)
 
-        Window("Welcome to Tatlin", id: "onboarding") {
+        Window(onboardingWindowTitle, id: "onboarding") {
             OnboardingView()
                 .environment(catalog)
         }
@@ -90,5 +91,31 @@ private struct MenuBarLabel: View {
         case .symbol(let symbol):
             Image(systemName: symbol)
         }
+    }
+}
+
+/// User-visible title of the onboarding window. Shared by the `Window` scene and
+/// `OnboardingView`'s window-focusing so the two can't drift apart.
+let onboardingWindowTitle = "Welcome to Tatlin"
+
+/// Brings an accessory (`LSUIElement`) app's window frontmost. Such apps don't auto-activate
+/// when a SwiftUI `Window`/`Settings` scene opens, and every system permission prompt hands
+/// focus back to the prompting process — so our windows sink behind other apps. A plain
+/// `openWindow`/`makeKeyAndOrderFront` can't raise above *other* apps for an agent;
+/// `activate(ignoringOtherApps:)` + `orderFrontRegardless()` can. Centralized here because
+/// four scenes need it (Settings, onboarding, event picker, speaker naming).
+@MainActor
+enum WindowFocus {
+    /// Raise the app's frontmost key-capable window, or the window with `title` when several
+    /// are open (the onboarding wizard, which can be re-run while Settings is up).
+    static func bringToFront(titled title: String? = nil) {
+        NSApp.activate(ignoringOtherApps: true)
+        let window: NSWindow? = if let title {
+            NSApp.windows.first { $0.title == title }
+        } else {
+            NSApp.keyWindow ?? NSApp.windows.last { $0.canBecomeKey }
+        }
+        window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
     }
 }

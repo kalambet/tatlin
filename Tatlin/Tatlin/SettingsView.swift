@@ -37,12 +37,8 @@ struct SettingsView: View {
         .scenePadding()
         .onAppear {
             // LSUIElement=YES apps don't auto-activate when the Settings scene opens, so the
-            // window lands behind whatever was foreground. Force activation + front-order.
-            NSApp.activate(ignoringOtherApps: true)
-            if let window = NSApp.keyWindow ?? NSApp.windows.last(where: { $0.canBecomeKey }) {
-                window.makeKeyAndOrderFront(nil)
-                window.orderFrontRegardless()
-            }
+            // window lands behind whatever was foreground (see WindowFocus).
+            WindowFocus.bringToFront()
             // User may have toggled login item state in System Settings since last view.
             loginItem.refresh()
         }
@@ -231,6 +227,13 @@ private struct ModelRow: View {
         .padding(.vertical, 4)
     }
 
+    /// Fraction downloaded, or nil until the total size is known — so callers can fall back
+    /// to an indeterminate spinner instead of showing a misleading 0%.
+    private var downloadFraction: Double? {
+        guard row.totalBytes > 0 else { return nil }
+        return min(1.0, Double(row.bytesReceived) / Double(row.totalBytes))
+    }
+
     @ViewBuilder private var action: some View {
         switch row.state {
         case .available:
@@ -240,8 +243,13 @@ private struct ModelRow: View {
             Button("Delete", role: .destructive) { catalog.delete(row.id) }
                 .buttonStyle(.bordered)
         case .downloading:
-            ProgressView()
-                .controlSize(.small)
+            if let downloadFraction {
+                ProgressView(value: downloadFraction)
+                    .frame(width: 90)
+            } else {
+                ProgressView()
+                    .controlSize(.small)
+            }
         case .failed:
             Button("Retry") { catalog.download(row.id) }
                 .buttonStyle(.bordered)
@@ -261,12 +269,15 @@ private struct ModelRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         case .downloading:
-            let fraction = row.totalBytes > 0
-                ? min(1.0, Double(row.bytesReceived) / Double(row.totalBytes))
-                : 0
-            Text(Int(fraction * 100).description + "%")
-                .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+            if let downloadFraction {
+                Text(Int(downloadFraction * 100).description + "%")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Downloading…")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         case .failed(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)

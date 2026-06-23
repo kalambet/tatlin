@@ -65,11 +65,7 @@ struct SpeakerNamingView: View {
         .padding(20)
         .frame(width: 500)
         .onAppear {
-            NSApp.activate(ignoringOtherApps: true)
-            if let window = NSApp.keyWindow ?? NSApp.windows.last(where: { $0.canBecomeKey }) {
-                window.makeKeyAndOrderFront(nil)
-                window.orderFrontRegardless()
-            }
+            WindowFocus.bringToFront()
             load()
         }
     }
