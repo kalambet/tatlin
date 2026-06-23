@@ -99,13 +99,15 @@ public actor ModelDownloader {
             let tmp = destination.appendingPathExtension("tmp")
             defer { try? FileManager.default.removeItem(at: tmp) }
 
-            try await downloadFile(
-                from: url,
-                to: tmp,
-                spec: spec,
-                file: file,
-                onProgress: onProgress
-            )
+            try await withDownloadRetry {
+                try await self.downloadFile(
+                    from: url,
+                    to: tmp,
+                    spec: spec,
+                    file: file,
+                    onProgress: onProgress
+                )
+            }
 
             // Verify against the manifest hash when pinned, and always record the computed hash
             // so subsequent loads can detect on-disk corruption (trust-on-first-use).
@@ -247,6 +249,35 @@ public actor ModelDownloader {
         map[file.relativePath] = hash
         if let data = try? JSONEncoder().encode(map) {
             try? data.write(to: sidecarURL(for: spec), options: .atomic)
+        }
+    }
+
+    // MARK: - Retry
+
+    /// Retry a transient download failure (network blip, 5xx) with exponential backoff so a
+    /// momentary drop doesn't fail a multi-GB shard outright (ml-reviewer #9). The whole file
+    /// is re-fetched — URLSession `resumeData` byte-range resume is a future enhancement; the
+    /// file-level skip already avoids re-downloading shards that completed in earlier runs.
+    private func withDownloadRetry(maxAttempts: Int = 3, _ op: () async throws -> Void) async throws {
+        var attempt = 0
+        while true {
+            do {
+                try await op()
+                return
+            } catch let error as DownloadError where Self.isTransient(error) {
+                attempt += 1
+                if attempt >= maxAttempts { throw error }
+                // 1s, 2s backoff.
+                try? await Task.sleep(nanoseconds: UInt64(1 << attempt) * 500_000_000)
+            }
+        }
+    }
+
+    private static func isTransient(_ error: DownloadError) -> Bool {
+        switch error {
+        case .networkError: return true
+        case .httpError(let statusCode, _): return statusCode >= 500
+        case .invalidURL, .checksumMismatch, .filesystemError: return false
         }
     }
 }
