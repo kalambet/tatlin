@@ -96,18 +96,7 @@ struct EventPickerView: View {
 
     @ViewBuilder private var customRow: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Button {
-                customSelected.toggle()
-            } label: {
-                HStack {
-                    Image(systemName: customSelected ? "circle.inset.filled" : "circle")
-                        .foregroundStyle(.tint)
-                    Text("None of these — use a custom name")
-                    Spacer()
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
+            Toggle("None of these — use a custom name", isOn: $customSelected)
 
             if customSelected {
                 TextField("Meeting name", text: $customTitle)
