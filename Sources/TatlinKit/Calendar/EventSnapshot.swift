@@ -17,6 +17,10 @@ public struct Attendee: Codable, Sendable, Hashable {
 public struct EventSnapshot: Codable, Sendable {
     /// Stable EventKit identifier (`EKEvent.eventIdentifier`), if available.
     public var eventIdentifier: String?
+    /// Recurring-series identity (`EKEvent.calendarItemExternalIdentifier`), set only when the
+    /// event recurs — identical across every instance, so it groups a series (M3.9 / ADR-14).
+    /// nil for one-off events, which fall back to title-based grouping.
+    public var seriesID: String?
     public var title: String
     public var attendees: [Attendee]
     public var notes: String?
@@ -27,6 +31,7 @@ public struct EventSnapshot: Codable, Sendable {
 
     public init(
         eventIdentifier: String? = nil,
+        seriesID: String? = nil,
         title: String,
         attendees: [Attendee] = [],
         notes: String? = nil,
@@ -35,6 +40,7 @@ public struct EventSnapshot: Codable, Sendable {
         calendarTitle: String? = nil
     ) {
         self.eventIdentifier = eventIdentifier
+        self.seriesID = seriesID
         self.title = title
         self.attendees = attendees
         self.notes = notes

@@ -7,6 +7,8 @@ import Foundation
 /// resolution functions. Keeps EventKit glue thin and the logic independently testable.
 public struct CandidateEvent: Sendable {
     public var identifier: String
+    /// Recurring-series identity (set only for recurring events). See `EventSnapshot.seriesID`.
+    public var seriesID: String?
     public var title: String
     public var isAllDay: Bool
     public var availability: EKEventAvailability
@@ -18,6 +20,7 @@ public struct CandidateEvent: Sendable {
 
     public init(
         identifier: String,
+        seriesID: String? = nil,
         title: String,
         isAllDay: Bool,
         availability: EKEventAvailability,
@@ -28,6 +31,7 @@ public struct CandidateEvent: Sendable {
         calendarTitle: String? = nil
     ) {
         self.identifier = identifier
+        self.seriesID = seriesID
         self.title = title
         self.isAllDay = isAllDay
         self.availability = availability
@@ -100,6 +104,7 @@ public func resolveTitle(from resolution: EventResolution, at date: Date) -> Str
 public func snapshot(from candidate: CandidateEvent) -> EventSnapshot {
     EventSnapshot(
         eventIdentifier: candidate.identifier,
+        seriesID: candidate.seriesID,
         title: candidate.title,
         attendees: candidate.attendees,
         notes: candidate.notes,
@@ -181,6 +186,9 @@ public final class CalendarService: Sendable {
 
         return CandidateEvent(
             identifier: event.eventIdentifier ?? UUID().uuidString,
+            // Stable across instances of a recurring event; only set when it actually recurs,
+            // so one-off meetings fall back to title-based series grouping (M3.9 / ADR-14).
+            seriesID: event.hasRecurrenceRules ? event.calendarItemExternalIdentifier : nil,
             title: event.title ?? "",
             isAllDay: event.isAllDay,
             availability: event.availability,

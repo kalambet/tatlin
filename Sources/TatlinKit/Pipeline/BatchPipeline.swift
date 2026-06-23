@@ -236,15 +236,29 @@ public struct BatchPipeline: Sendable {
         }
 
         // Stage 6 — Summarization (single-pass or map-reduce) → MeetingNotes + LLM proposals.
+        // M3.9: prime the model with the series' previous notes + running state, and — on a real
+        // run — refresh that running state inside the same loaded-model block.
+        let series = loadSeriesContext(for: session)
         let notes: MeetingNotes
+        var newSeriesState: String?
         if shouldRun(.summarization, from: fromStage) {
             progress(Progress(stage: .summarization, message: "Summarizing"))
-            notes = try await summarize(resolution.transcript, roster: session.event?.attendees ?? [])
+            let result = try await summarize(
+                resolution.transcript, roster: session.event?.attendees ?? [],
+                seriesBlock: series.promptBlock,
+                stateUpdate: series.folderURL != nil ? (series.priorState, session.title) : nil
+            )
+            notes = result.notes
+            newSeriesState = result.newState
             try writeNotesMarkdown(notes, to: dir.appendingPathComponent("notes.md"))
             try store.markCompleted(.summarization, for: sessionID)
         } else {
             // No structured re-parse from notes.md on resume; recompute is cheap relative to ASR.
-            notes = try await summarize(resolution.transcript, roster: session.event?.attendees ?? [])
+            // This pass only re-derives speaker proposals — don't refresh series state from it.
+            notes = try await summarize(
+                resolution.transcript, roster: session.event?.attendees ?? [],
+                seriesBlock: series.promptBlock, stateUpdate: nil
+            ).notes
         }
 
         // Re-resolve speakers now that the LLM has proposed names (layer 3), then re-attribute.
@@ -269,9 +283,13 @@ public struct BatchPipeline: Sendable {
             transcript: resolution.transcript
         )
         let markdown = MarkdownComposer.render(doc)
-        let outURL = vaultURL(for: session)
+        let outURL = outputURL(for: session, series: series)
         try FileManager.default.createDirectory(at: outURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try markdown.write(to: outURL, atomically: true, encoding: .utf8)
+        // M3.9 series memory: persist the refreshed running state next to the notes.
+        if let folder = series.folderURL, let newSeriesState {
+            try? newSeriesState.write(to: folder.appendingPathComponent("state.md"), atomically: true, encoding: .utf8)
+        }
         try store.markCompleted(.output, for: sessionID)
         progress(Progress(stage: .output, message: "Wrote \(outURL.lastPathComponent)"))
         return outURL
@@ -279,36 +297,58 @@ public struct BatchPipeline: Sendable {
 
     // MARK: - Summarization driver
 
-    private func summarize(_ transcript: AlignedTranscript, roster: [Attendee]) async throws -> MeetingNotes {
+    /// Stage 6 driver. `seriesBlock` (M3.9) is injected into the single-pass / reduce prompt
+    /// for continuity; for map-reduce it's added at the reduce step only, to stay in budget.
+    /// When `stateUpdate` is set, the running `state.md` is refreshed in the *same* loaded-model
+    /// block (no second 30B reload) and returned alongside the notes.
+    private func summarize(
+        _ transcript: AlignedTranscript,
+        roster: [Attendee],
+        seriesBlock: String?,
+        stateUpdate: (current: String?, title: String)?
+    ) async throws -> (notes: MeetingNotes, newState: String?) {
         let chunks = TranscriptChunker.plan(transcript)
         let detected = transcript.language
         let engine = llm
         let params = config.llmParameters
         let lang = config.outputLanguage
 
-        let raw: String = try await host.withModel(
+        let (raw, newState): (String, String?) = try await host.withModel(
             key: llm.modelID,
             load: { try await engine.load(); return engine },
             unload: { await $0.unload() }
         ) { llm in
+            let summaryRaw: String
             if chunks.count <= 1 {
                 let body = chunks.first.map(TranscriptChunker.render) ?? ""
-                let messages = SummaryPrompt.map(transcriptBody: body, roster: roster, language: lang, detectedLanguage: detected)
-                return try await complete(llm, messages, params, language: lang)
+                let messages = SummaryPrompt.map(transcriptBody: body, roster: roster, language: lang, detectedLanguage: detected, series: seriesBlock)
+                summaryRaw = try await complete(llm, messages, params, language: lang)
+            } else {
+                // Map-reduce: summarize each chunk, then reduce (series context at reduce only).
+                var partials: [String] = []
+                for (i, chunk) in chunks.enumerated() {
+                    let messages = SummaryPrompt.map(
+                        transcriptBody: TranscriptChunker.render(chunk), roster: roster,
+                        language: lang, detectedLanguage: detected, chunkIndex: i, chunkCount: chunks.count
+                    )
+                    partials.append(try await llm.complete(messages: messages, parameters: params))
+                }
+                let reduceMessages = SummaryPrompt.reduce(partials: partials, roster: roster, language: lang, detectedLanguage: detected, series: seriesBlock)
+                summaryRaw = try await complete(llm, reduceMessages, params, language: lang)
             }
-            // Map-reduce: summarize each chunk, then reduce.
-            var partials: [String] = []
-            for (i, chunk) in chunks.enumerated() {
-                let messages = SummaryPrompt.map(
-                    transcriptBody: TranscriptChunker.render(chunk), roster: roster,
-                    language: lang, detectedLanguage: detected, chunkIndex: i, chunkCount: chunks.count
+            // Stage 6b — fold this meeting into the running series state, same loaded model.
+            var newState: String?
+            if let stateUpdate {
+                let notesMarkdown = MarkdownComposer.notesBody(NotesParser.parse(summaryRaw, language: detected))
+                let stateMessages = SummaryPrompt.updateState(
+                    currentState: stateUpdate.current, meetingTitle: stateUpdate.title,
+                    meetingNotes: notesMarkdown, language: lang
                 )
-                partials.append(try await llm.complete(messages: messages, parameters: params))
+                newState = try await llm.complete(messages: stateMessages, parameters: LLMParameters(maxTokens: 1500))
             }
-            let reduceMessages = SummaryPrompt.reduce(partials: partials, roster: roster, language: lang, detectedLanguage: detected)
-            return try await complete(llm, reduceMessages, params, language: lang)
+            return (summaryRaw, newState)
         }
-        return NotesParser.parse(raw, language: detected)
+        return (NotesParser.parse(raw, language: detected), newState)
     }
 
     /// Complete + one validator-driven repair pass (research Q6).
@@ -426,11 +466,47 @@ public struct BatchPipeline: Sendable {
         return out
     }
 
-    // MARK: - Output location
+    // MARK: - Output location + series memory (M3.9)
 
-    private func vaultURL(for session: Session) -> URL {
-        let base = config.vaultDirectory ?? store.directory(for: session.id)
+    /// Per-session continuity context: the series subfolder (when a vault is set), the previous
+    /// meeting's notes, the running `state.md`, and the assembled summariser prompt block.
+    private struct SeriesContext: Sendable {
+        var folderURL: URL?
+        var priorNotes: String?
+        var priorState: String?
+        var promptBlock: String?
+    }
+
+    private func loadSeriesContext(for session: Session) -> SeriesContext {
+        let inSeries = ((try? store.list()) ?? []).filter { $0.seriesKey == session.seriesKey }
+        // Folder name is pinned to the earliest session's title, so a later rename doesn't fork it.
+        let earliest = inSeries.min { $0.createdAt < $1.createdAt } ?? session
+        let folderName = MarkdownComposer.sanitize(earliest.event?.title ?? earliest.title)
+        let folderURL: URL? = config.vaultDirectory.flatMap { vault in
+            folderName.isEmpty ? nil : vault.appendingPathComponent(folderName, isDirectory: true)
+        }
+        // Previous meeting = most recent OTHER session in the series whose notes exist on disk.
+        let prior = inSeries
+            .filter { $0.id != session.id }
+            .sorted { $0.createdAt > $1.createdAt }
+            .first { FileManager.default.fileExists(atPath: store.directory(for: $0.id).appendingPathComponent("notes.md").path) }
+        let priorNotes = prior.flatMap {
+            try? String(contentsOf: store.directory(for: $0.id).appendingPathComponent("notes.md"), encoding: .utf8)
+        }
+        let priorState = folderURL.flatMap {
+            try? String(contentsOf: $0.appendingPathComponent("state.md"), encoding: .utf8)
+        }
+        return SeriesContext(
+            folderURL: folderURL,
+            priorNotes: priorNotes,
+            priorState: priorState,
+            promptBlock: SummaryPrompt.seriesContextBlock(priorState: priorState, priorNotes: priorNotes)
+        )
+    }
+
+    private func outputURL(for session: Session, series: SeriesContext) -> URL {
         let name = MarkdownComposer.filename(title: session.event?.title ?? session.title, date: session.createdAt)
+        let base = series.folderURL ?? config.vaultDirectory ?? store.directory(for: session.id)
         return base.appendingPathComponent(name)
     }
 

@@ -66,4 +66,20 @@ public extension Session {
         f.dateFormat = "yyyy-MM-dd'T'HHmmss'Z'"
         return f.string(from: date)
     }
+
+    /// Stable key grouping recurring meetings into a series (plan.md M3.9 / ADR-14): the
+    /// calendar recurring-event identity when present, else the normalized title. Prefixed so
+    /// an id and a title can never collide.
+    var seriesKey: String {
+        if let id = event?.seriesID { return "id:\(id)" }
+        return "title:\(Self.normalizedTitle(title))"
+    }
+
+    /// Normalized title for title-based series grouping: lowercased, whitespace-collapsed.
+    /// Timestamped default titles stay unique (so ad-hoc meetings don't group spuriously).
+    static func normalizedTitle(_ title: String) -> String {
+        title.lowercased()
+            .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
+            .joined(separator: " ")
+    }
 }
