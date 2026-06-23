@@ -28,7 +28,7 @@ struct TatlinApp: App {
             // request so identical candidate lists still fire `.onChange`.
             MenuBarLabel(model: model)
         }
-        .menuBarExtraStyle(.window)
+        .menuBarExtraStyle(.menu)
 
         Settings {
             SettingsView()
