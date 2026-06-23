@@ -17,8 +17,11 @@ struct OnboardingView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            content
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ScrollView {
+                content
+                    .frame(maxWidth: .infinity, alignment: .topLeading)
+            }
+            .frame(maxHeight: .infinity)
             Divider()
             footer
         }
