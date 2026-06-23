@@ -277,14 +277,19 @@ final class AppModel {
         processingTask = nil
     }
 
-    /// Hold a power assertion that keeps the *system* awake while recording, so the mic keeps
-    /// capturing when the user steps away. Uses `.idleSystemSleepDisabled` (not
-    /// `.idleDisplaySleepDisabled`), so the display is still free to sleep — only full system
-    /// idle sleep is blocked. Idempotent; the token is released in `allowSleep()`.
+    /// Hold a power assertion that keeps the system awake while recording, so the mic keeps
+    /// capturing when the user steps away. Capture rides on a display-scoped SCStream filter,
+    /// so for in-person (mic-only) meetings — where no conferencing app keeps the display lit —
+    /// we also block *display* sleep, otherwise the 2-minute battery display-sleep can stall
+    /// capture. Remote meetings keep the display awake via the call app, so we honor "display
+    /// may sleep" there. Idempotent; the token is released in `allowSleep()`.
     private func preventSleepWhileRecording() {
         guard sleepAssertion == nil else { return }
+        let options: ProcessInfo.ActivityOptions = AppSettings.current().audioSource == .mic
+            ? .idleDisplaySleepDisabled
+            : .idleSystemSleepDisabled
         sleepAssertion = ProcessInfo.processInfo.beginActivity(
-            options: .idleSystemSleepDisabled,
+            options: options,
             reason: "Tatlin is recording meeting audio"
         )
     }
