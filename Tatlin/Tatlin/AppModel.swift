@@ -63,6 +63,9 @@ final class AppModel {
     private let store: SessionStore
     private var recorder: SCStreamRecorder?
     private var currentID: String?
+    /// Power-management assertion held only while recording, so the Mac doesn't idle-sleep
+    /// and silently kill mic capture. nil when not recording. See `preventSleepWhileRecording()`.
+    private var sleepAssertion: NSObjectProtocol?
 
     init() {
         // SessionStore only throws on a filesystem failure creating Application Support —
@@ -170,6 +173,7 @@ final class AppModel {
                 try await recorder.start(session: session, store: store)
                 self.recorder = recorder
                 status = .recording
+                preventSleepWhileRecording()
 
                 // Stage the picker only after capture is live — keeps the recorder hot
                 // even while the user is mulling over which calendar event this is.
@@ -188,6 +192,7 @@ final class AppModel {
 
     private func stop() {
         Task {
+            allowSleep()  // recording is ending — let the system idle-sleep normally again
             do {
                 try await recorder?.stop()
                 recorder = nil
@@ -198,6 +203,25 @@ final class AppModel {
             }
             refreshResumable()
         }
+    }
+
+    /// Hold a power assertion that keeps the *system* awake while recording, so the mic keeps
+    /// capturing when the user steps away. Uses `.idleSystemSleepDisabled` (not
+    /// `.idleDisplaySleepDisabled`), so the display is still free to sleep — only full system
+    /// idle sleep is blocked. Idempotent; the token is released in `allowSleep()`.
+    private func preventSleepWhileRecording() {
+        guard sleepAssertion == nil else { return }
+        sleepAssertion = ProcessInfo.processInfo.beginActivity(
+            options: .idleSystemSleepDisabled,
+            reason: "Tatlin is recording meeting audio"
+        )
+    }
+
+    /// Release the recording sleep assertion, letting the Mac idle-sleep normally again.
+    private func allowSleep() {
+        guard let sleepAssertion else { return }
+        ProcessInfo.processInfo.endActivity(sleepAssertion)
+        self.sleepAssertion = nil
     }
 
     // MARK: - Pipeline
