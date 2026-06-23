@@ -8,6 +8,7 @@
 // the two-line change needed in RunCommand.swift.
 
 import Foundation
+import MLX
 import TatlinKit
 
 /// A resolved set of engine directories, produced by `ModelStore` after download + verification.
@@ -78,6 +79,7 @@ public enum MLEngineFactory {
         directories: EngineDirectories,
         asrBackend: ASRBackend = .parakeet
     ) -> (asr: any ASREngine, diarizer: any DiarizerEngine, llm: any LLMEngine) {
+        configureGPUMemory()
 
         let asr: any ASREngine = switch asrBackend {
         case .parakeet:
@@ -129,5 +131,19 @@ public enum MLEngineFactory {
             qwen:       qwenDir
         )
         return make(directories: dirs, asrBackend: asrBackend)
+    }
+
+    /// Bound the MLX Metal buffer cache (the `MLX.GPU.set(cacheLimit:)` guard from ADR-11 that
+    /// backstops the 64 GB ceiling, research risk #6). Sequential residency (`ModelHost`) bounds
+    /// the *active* set — weights + KV; this bounds the *cache* of freed buffers so they return
+    /// to the OS between stages instead of accumulating. Idempotent; called before any load.
+    ///
+    /// Lives here, not in `ModelHost`, because TatlinKit deliberately never imports MLX. The
+    /// per-stage `MLX.Memory.clearCache()` in each engine's `unload()` does the "drop refs
+    /// between stages" half.
+    public static func configureGPUMemory() {
+        // research.md: set cacheLimit "modestly". 1 GiB gives generation buffer reuse while
+        // keeping the resident footprint well under the ceiling; tune during on-device eval.
+        MLX.GPU.set(cacheLimit: 1 << 30)
     }
 }

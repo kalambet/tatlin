@@ -21,7 +21,9 @@ import Foundation
 /// }
 /// ```
 ///
-/// TODO: MLX.GPU.set(cacheLimit:) + drop refs between stages (once TatlinML is enabled).
+/// MLX memory: the `MLX.GPU.set(cacheLimit:)` ceiling guard is configured in TatlinML
+/// (`MLEngineFactory.configureGPUMemory()`) because TatlinKit never imports MLX; refs are
+/// dropped between stages by each engine's `unload()` closure (calls `MLX.Memory.clearCache()`).
 public actor ModelHost {
     // MARK: - Residency state
 
@@ -61,9 +63,8 @@ public actor ModelHost {
     ) async throws -> T {
         // Evict if a different key is resident.
         if let current = resident, current.key != key {
-            await current.unload()
+            await current.unload()  // engine unload() clears the MLX cache (drops refs)
             resident = nil
-            // TODO: MLX.GPU.set(cacheLimit:) + drop refs between stages
         }
 
         // Try to reuse the resident value if key and type both match.
@@ -97,10 +98,9 @@ public actor ModelHost {
     /// Evict whatever model is currently resident (if any).
     public func evict() async {
         if let current = resident {
-            await current.unload()
+            await current.unload()  // engine unload() clears the MLX cache (drops refs)
             resident = nil
         }
-        // TODO: MLX.GPU.set(cacheLimit:) + drop refs between stages
     }
 
     /// The key of the currently resident model, or `nil` if none is loaded.
